@@ -30,7 +30,8 @@ int main(int argc, char *argv[])
     std::string module_name, module_nickname;
     bool output_force_template = false;
     bool keep_temp_files = false;
-    bool output_c_code = false;
+    bool no_extrap = false;
+    bool show_nodes = false;
 
     // Create registry object
     Registry reg;
@@ -39,17 +40,21 @@ int main(int argc, char *argv[])
     {
         auto arg = *it;
 
-        if (arg.find("-D") == 0)
-        {
-            reg.symbols.push_back(arg.substr(2));
-        }
-        else if (arg.find("/D=") == 0)
-        {
-            reg.symbols.push_back(arg.substr(3));
-        }
-        else if ((arg.compare("-force") == 0) || (arg.compare("/force") == 0))
+        if ((arg.compare("-force") == 0) || (arg.compare("/force") == 0))
         {
             output_force_template = true;
+        }
+        else if ((arg.compare("-ccode")) == 0 || (arg.compare("/ccode")) == 0)
+        {
+            reg.gen_c_code = true;
+        }
+        else if ((arg.compare("-noextrap")) == 0 || (arg.compare("/noextrap")) == 0)
+        {
+            no_extrap = true;
+        }
+        else if ((arg.compare("-shownodes")) == 0 || (arg.compare("/shownodes")) == 0)
+        {
+            show_nodes = true;
         }
         else if ((arg.compare("-O")) == 0 || (arg.compare("/O")) == 0)
         {
@@ -66,18 +71,6 @@ int main(int argc, char *argv[])
             {
                 reg.include_dirs.push_back(*it);
             }
-        }
-        else if ((arg.compare("-ccode")) == 0 || (arg.compare("/ccode")) == 0)
-        {
-            output_c_code = true;
-        }
-        else if ((arg.compare("-noextrap")) == 0 || (arg.compare("/noextrap")) == 0)
-        {
-            reg.no_extrap = true;
-        }
-        else if ((arg.compare("-shownodes")) == 0 || (arg.compare("/shownodes")) == 0)
-        {
-            reg.show_nodes = true;
         }
         else if ((arg.compare("-template")) == 0 || (arg.compare("-registry")) == 0 ||
                  (arg.compare("/template")) == 0 || (arg.compare("/registry")) == 0)
@@ -103,21 +96,10 @@ int main(int argc, char *argv[])
                 return EXIT_FAILURE;
             }
 
-            if (arg.substr(1).compare("template") == 0)
-            {
-                return output_template(module_name, module_nickname,
-                                       output_force_template, true);
-            }
-            else
-            {
-                return output_template(module_name, module_nickname,
-                                       output_force_template, false);
-            }
-        }
+            bool is_template = arg.substr(1).compare("template") == 0;
 
-        else if ((arg.compare("-keep") == 0) || (arg.compare("/keep") == 0))
-        {
-            keep_temp_files = 1;
+            return output_template(module_name, module_nickname, output_force_template,
+                                   is_template);
         }
         else if ((arg.compare("-h") == 0) || (arg.compare("/h") == 0))
         {
@@ -144,9 +126,7 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    reg.lex();
-
-    reg.gen_module_files(out_dir, output_c_code);
+    reg.gen_module_files(out_dir);
 
     return EXIT_SUCCESS;
 }

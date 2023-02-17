@@ -6,9 +6,9 @@ add_executable(openfast_registry_cpp
   src/registry.cpp
   src/record.cpp
   src/record.hpp
-  src/node.hpp
   src/templates.hpp
   src/main.cpp
+  src/generate.cpp
 )
 
 set_property(TARGET openfast_registry_cpp PROPERTY CXX_STANDARD 11)
