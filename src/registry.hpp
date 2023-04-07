@@ -10,9 +10,27 @@
 #include <string>
 #include <vector>
 
-#include "record.hpp"
-
 std::string tolower(std::string s);
+
+// case-independent (ci) string less_than: returns true if s1 < s2
+struct ci_less : std::binary_function<std::string, std::string, bool>
+{
+    // case-independent (ci) compare_less binary function
+    struct nocase_compare : public binary_function<unsigned char, unsigned char, bool>
+    {
+        bool operator()(const unsigned char &c1, const unsigned char &c2) const
+        {
+            return tolower(c1) < tolower(c2);
+        }
+    };
+
+    bool operator()(const std::string &s1, const std::string &s2) const
+    {
+        return lexicographical_compare(s1.begin(), s1.end(), // source range
+                                       s2.begin(), s2.end(), // dest range
+                                       nocase_compare());    // comparison
+    }
+};
 
 enum class Period
 {
@@ -31,26 +49,50 @@ struct DataType
         Derived,
     };
 
+    struct Simple
+    {
+        std::string name;
+        std::string maps_to_fortran;
+        std::string maps_to_c;
+        std::string string_len;
+    };
+
+    struct Derived
+    {
+        std::string name;
+        std::string name_short;
+        std::string name_prefixed;
+        std::shared_ptr<Module> module;
+        std::vector<Field> fields;
+        bool contains_pointer = false;
+        bool is_interface = false;
+        size_t max_dims = 0;
+    };
+
     Type type;
 
-    // Simple
-    std::string name;
-    std::string maps_to;
-    std::string string_len;
-    std::shared_ptr<Module> module;
-    std::vector<Field> fields;
+    Simple simple;
+    Derived derived;
 
-    // Derived
-    std::string name_base;
-    size_t max_dims = 0;
-    bool has_pointer = false;
-    bool is_interface = false;
-
-    DataType(std::string name, std::string maps_to, Type type_class = Type::Simple,
-             std::shared_ptr<Module> module = nullptr, std::string name_short = "")
-        : name(name), name_base(name_short), maps_to(maps_to), type(type_class),
-          module(module)
+    // Constructor for simple type
+    DataType(const std::string &name, const std::string &maps_to_fortran, const std::string &maps_to_c) : type(Type::Simple)
     {
+        this->simple.name = name;
+        this->simple.maps_to_fortran = maps_to_fortran;
+        this->simple.maps_to_c = maps_to_c;
+    }
+
+    // Constructor for derived type
+    DataType(std::shared_ptr<Module> mod, const std::string &name, const std::string &name_short = "",
+             const std::string &name_prefixed = "", const bool is_interface = false, const bool contains_pointer = false)
+        : type(Type::Derived)
+    {
+        this->derived.name = name;
+        this->derived.module = mod;
+        this->derived.name_short = name_short.empty() ? name : name_short;
+        this->derived.name_prefixed = name_prefixed.empty() ? name : name_prefixed;
+        this->derived.is_interface = is_interface;
+        this->derived.contains_pointer = contains_pointer;
     }
 };
 
@@ -106,41 +148,38 @@ struct Field
     int num_dims = 0;
     int boundary_array = 0;
     int sub_grid = 0;
-    bool has_pointer = false;
+    bool is_pointer = false;
 
-    Field(Record::Field const &rec, std::shared_ptr<DataType> const &type)
+    Field(const std::string &name, std::shared_ptr<DataType> const &type, const std::string &dims, const std::string &ctrl,
+          const std::string &init_value, const std::string &desc, const std::string &units)
     {
-        this->name = rec.name;
+        this->name = name;
         this->type = type;
 
-        this->has_pointer |= type->has_pointer;
+        if (init_value.compare("-") != 0)
+            this->init_value = init_value;
 
-        if (rec.init_value.compare("-") != 0)
-            this->init_value = rec.init_value;
-
-        if (rec.ctrl.compare("2pi") != 0)
+        if (ctrl.compare("2pi") != 0)
             this->gen_periodic = Period::TwoPi;
 
-        if (rec.desc.compare("-") != 0)
-            this->desc = rec.desc;
+        if (desc.compare("-") != 0)
+            this->desc = desc;
 
-        if (rec.units.compare("-") != 0)
-            this->units = rec.units;
+        if (units.compare("-") != 0)
+            this->units = units;
 
-        if (rec.dims.compare("-") != 0)
+        if (dims.compare("-") != 0)
         {
             // Parse dims, throw exception on error
-            if (this->parse_dims(rec.dims) != 0)
-                throw std::invalid_argument("invalid dimensions: " + rec.dims);
+            if (this->parse_dims(dims) != 0)
+                throw std::invalid_argument("invalid dimensions: " + dims);
 
             // Add dimension number
             for (size_t i = 0; i < this->dims.size(); ++i)
                 this->dims[i].i = i + 1;
 
             // Field is a pointer if any dim is a pointer
-            this->has_pointer |=
-                std::any_of(this->dims.begin(), this->dims.end(),
-                            [](const DimSpec &ds) { return ds.is_pointer; });
+            this->is_pointer |= std::any_of(this->dims.begin(), this->dims.end(), [](const DimSpec &ds) { return ds.is_pointer; });
         }
     }
 
@@ -164,10 +203,8 @@ struct Field
         }
 
         // If all dims are colons or asterisks, no braces
-        if (std::all_of(dim_field.begin(), dim_field.end(),
-                        [](char c) { return c == '*'; }) ||
-            std::all_of(dim_field.begin(), dim_field.end(),
-                        [](char c) { return c == ':'; }))
+        if (std::all_of(dim_field.begin(), dim_field.end(), [](char c) { return c == '*'; }) ||
+            std::all_of(dim_field.begin(), dim_field.end(), [](char c) { return c == ':'; }))
         {
             for (auto &dim : dim_field)
                 this->dims.push_back(DimSpec(std::string(1, dim)));
@@ -195,16 +232,17 @@ struct Parameter
     std::string desc = "-";
     std::string units = "-";
 
-    Parameter(const Record::Param &rec, std::shared_ptr<DataType> &type)
+    Parameter(const std::string &name, std::shared_ptr<DataType> &type, const std::string &value, const std::string &desc,
+              const std::string &units)
     {
-        this->name = rec.name;
+        this->name = name;
         this->type = type;
-        if (rec.value.compare("-") != 0)
-            this->value = rec.value;
-        if (rec.desc.compare("-") != 0)
-            this->desc = rec.desc;
-        if (rec.desc.compare("-") != 0)
-            this->desc = rec.desc;
+        if (value.compare("-") != 0)
+            this->value = value;
+        if (desc.compare("-") != 0)
+            this->desc = desc;
+        if (desc.compare("-") != 0)
+            this->desc = desc;
     }
 };
 
@@ -213,12 +251,11 @@ struct Module
     std::string name;
     std::string nickname;
     std::vector<Parameter> params;
-    std::map<std::string, std::shared_ptr<DataType>> data_types;
+    std::map<std::string, std::shared_ptr<DataType>, ci_less> data_types;
     std::vector<std::string> data_type_order;
     bool is_root = false;
 
-    Module(std::string name, std::string nickname, bool is_root)
-        : name(name), nickname(nickname), is_root(is_root)
+    Module(std::string name, std::string nickname, bool is_root) : name(name), nickname(nickname), is_root(is_root)
     {
     }
 };
@@ -227,77 +264,114 @@ struct InterfaceData
 {
     std::string name;
     std::string name_short;
+    bool only_floats;
+
+    InterfaceData(std::string name, std::string name_short, bool only_floats)
+        : name(name), name_short(name_short), only_floats(only_floats)
+    {
+    }
 };
 
 struct Registry
 {
     std::vector<std::string> include_dirs = {"."};
     std::set<std::string> include_files;
-    std::map<std::string, InterfaceData> interface_names;
-    std::map<std::string, std::shared_ptr<Module>> modules;
-    std::map<std::string, std::shared_ptr<DataType>> data_types;
+    std::map<std::string, InterfaceData, ci_less> interface_names;
+    std::map<std::string, std::shared_ptr<Module>, ci_less> modules;
+    std::map<std::string, std::shared_ptr<DataType>, ci_less> data_types;
     bool gen_c_code = false;
+    bool no_extrap_interp = false;
 
     Registry()
     {
-        auto IntKi = std::make_shared<DataType>("IntKi", "INTEGER(IntKi)");
-        auto ReKi = std::make_shared<DataType>("ReKi", "REAL(ReKi)");
-        auto DbKi = std::make_shared<DataType>("DbKi", "REAL(DbKi)");
-        auto mesh =
-            std::make_shared<DataType>("MeshType", "MeshType", DataType::Type::Derived);
-        mesh->has_pointer = true;
+        // Simple types
+        auto IntKi = std::make_shared<DataType>("IntKi", "INTEGER(IntKi)", "int");
+        auto SiKi = std::make_shared<DataType>("SiKi", "REAL(SiKi)", "float");
+        auto R4Ki = std::make_shared<DataType>("R4Ki", "REAL(R4Ki)", "float");
+        auto ReKi = std::make_shared<DataType>("ReKi", "REAL(ReKi)", "float");
+        auto R8Ki = std::make_shared<DataType>("R8Ki", "REAL(R8Ki)", "float");
+        auto DbKi = std::make_shared<DataType>("DbKi", "REAL(DbKi)", "double");
+        auto logical = std::make_shared<DataType>("Logical", "LOGICAL", "bool");
 
-        this->data_types = std::initializer_list<
-            std::map<std::string, std::shared_ptr<DataType>>::value_type>{
-            {"integer", IntKi},
-            {"intki", IntKi},
-            {"b4ki", IntKi},
-            {"real", ReKi},
-            {"reki", ReKi},
-            {"siki", std::make_shared<DataType>("SiKi", "REAL(SiKi)")},
-            {"r4ki", std::make_shared<DataType>("R4Ki", "REAL(R4Ki)")},
-            {"r8ki", std::make_shared<DataType>("R8Ki", "REAL(R8Ki)")},
-            {"doubleprecision", DbKi},
-            {"dbki", DbKi},
-            {"logical", std::make_shared<DataType>("Logical", "LOGICAL")},
-            {"meshtype", mesh},
-            {"dll_type",
-             std::make_shared<DataType>("DLL_Type", "DLL_Type", DataType::Type::Derived)},
+        // Derived types
+        auto mesh = std::make_shared<DataType>(nullptr, "MeshType", "MeshType", "MeshType", false, true);
+        auto dll = std::make_shared<DataType>(nullptr, "DLL_Type");
+
+        // Map of data types
+        this->data_types = std::map<std::string, std::shared_ptr<DataType>, ci_less>{
+            {"integer", IntKi}, {"intki", IntKi},     {"b4ki", IntKi},
+            {"real", ReKi},     {"reki", ReKi},       {"siki", SiKi},
+            {"r4ki", R4Ki},     {"r8ki", R8Ki},       {"doubleprecision", DbKi},
+            {"dbki", DbKi},     {"logical", logical}, {"meshtype", mesh},
+            {"dll_type", dll},
         };
 
-        this->interface_names =
-            std::initializer_list<std::map<std::string, InterfaceData>::value_type>{
-                {"initinputtype", InterfaceData{"InitInputType", "InitInput"}},
-                {"initoutputtype", InterfaceData{"InitOutputType", "InitOutput"}},
-                {"inputtype", InterfaceData{"InputType", "Input"}},
-                {"outputtype", InterfaceData{"OutputType", "Output"}},
-                {"continuousstatetype",
-                 InterfaceData{"ContinuousStateType", "ContState"}},
-                {"discretestatetype", InterfaceData{"DiscreteStateType", "DiscState"}},
-                {"constraintstatetype",
-                 InterfaceData{"ConstraintStateType", "ConstrState"}},
-                {"otherstatetype", InterfaceData{"OtherStateType", "OtherState"}},
-                {"miscvartype", InterfaceData{"MiscVarType", "Misc"}},
-                {"parametertype", InterfaceData{"ParameterType", "Param"}},
-                {"partialoutputpinputtype",
-                 InterfaceData{"PartialOutputPInputType", "dYdu"}},
-                {"partialcontstatepinputtype",
-                 InterfaceData{"PartialConstStatePInputType", "dXdu"}},
-                {"partialdiscstatepinputtype",
-                 InterfaceData{"PartialDiscStatePInputType", "dXddu"}},
-                {"partialconstrstatepinputtype",
-                 InterfaceData{"PartialConstrStatePInputType", "dZdu"}},
-            };
+        this->interface_names = std::map<std::string, InterfaceData, ci_less>{
+            {"InitInputType", InterfaceData("InitInputType", "InitInput", false)},
+            {"InitOutputType", InterfaceData("InitOutputType", "InitOutput", false)},
+            {"InputType", InterfaceData("InputType", "Input", true)},
+            {"OutputType", InterfaceData("OutputType", "Output", true)},
+            {"ContinuousStateType", InterfaceData("ContinuousStateType", "ContState", true)},
+            {"DiscreteStateType", InterfaceData("DiscreteStateType", "DiscState", true)},
+            {"ConstraintStateType", InterfaceData("ConstraintStateType", "ConstrState", true)},
+            {"OtherStateType", InterfaceData("OtherStateType", "OtherState", false)},
+            {"MiscVarType", InterfaceData("MiscVarType", "Misc", false)},
+            {"ParameterType", InterfaceData("ParameterType", "Param", false)},
+            {"PartialOutputPInputType", InterfaceData("PartialOutputPInputType", "dYdu", true)},
+            {"PartialContStatePInputType", InterfaceData("PartialContStatePInputType", "dXdu", true)},
+            {"PartialDiscStatePInputType", InterfaceData("PartialDiscStatePInputType", "dXddu", true)},
+            {"PartialConstrStatePInputType", InterfaceData("PartialConstrStatePInputType", "dZdu", true)},
+        };
     }
 
+    // Parsing
     int parse(const std::string &file_name, const bool is_root);
-    void lex_record(const Record &rec);
-    std::shared_ptr<DataType> find_type(
-        const std::string &type_name,
-        std::map<std::string, std::shared_ptr<DataType>> &data_types);
+    int parse_line(std::string line, std::vector<std::string> &fields_prev, bool is_root);
+    std::shared_ptr<DataType> find_type(const std::string &type_name, std::shared_ptr<Module> mod = nullptr)
+    {
+        // Pointer to type
+        std::shared_ptr<DataType> data_type;
+
+        // Get map of data types to search
+        // If module was provided, search it; otherwise, search registry
+        auto &data_types = mod == nullptr ? this->data_types : mod->data_types;
+
+        // Search for type in registry, return if found
+        auto it = data_types.find(type_name);
+        if (it != data_types.end())
+        {
+            return it->second;
+        }
+
+        // If type starts with character (string type), build type and return it
+        if (tolower(type_name).compare(0, 9, "character") == 0)
+        {
+            // Get string length
+            auto string_len = type_name.substr(10, type_name.size() - 11);
+
+            // C type
+            auto c_type = "char[" + string_len + "]";
+
+            // Build type
+            data_type = std::make_shared<DataType>(type_name, type_name, c_type);
+            data_type->simple.string_len = string_len;
+
+            // Add type to registry
+            this->data_types[type_name] = data_type;
+            return data_type;
+        }
+
+        return nullptr;
+    }
+
+    // Output
     int gen_module_files(std::string const &out_dir);
-    void gen_fortran_module(std::ostream &out, const Module &mod);
-    void gen_copy(std::ostream &out, const Module &mod, const DataType &ddt);
+    int gen_fortran_module(const Module &mod, const std::string &out_dir);
+    int gen_c_module(const Module &mod, const std::string &out_dir);
+    void gen_copy(std::ostream &w, const Module &mod, const DataType::Derived &ddt);
+    void gen_destroy(std::ostream &w, const Module &mod, const DataType::Derived &ddt);
+    void gen_pack(std::ostream &w, const Module &mod, const DataType::Derived &ddt);
+    void gen_unpack(std::ostream &w, const Module &mod, const DataType::Derived &ddt);
 };
 
 #endif

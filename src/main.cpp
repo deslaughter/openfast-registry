@@ -6,8 +6,7 @@
 #include "registry.hpp"
 #include "templates.hpp"
 
-int output_template(std::string &module_name, std::string &module_nickname,
-                    bool overwrite, bool is_template);
+int output_template(std::string &module_name, std::string &module_nickname, bool overwrite, bool is_template);
 
 const std::string thisprog_ver = "FAST Registry";
 
@@ -15,8 +14,7 @@ int main(int argc, char *argv[])
 {
     std::cerr << std::endl;
     std::cerr << "----- " << thisprog_ver << " --------------" << std::endl;
-    std::cerr << "----------------------------------------------------------"
-              << std::endl;
+    std::cerr << "----------------------------------------------------------" << std::endl;
 
     // Read command line arguments
     std::vector<std::string> arguments;
@@ -29,9 +27,6 @@ int main(int argc, char *argv[])
     std::string inp_file_name;
     std::string module_name, module_nickname;
     bool output_force_template = false;
-    bool keep_temp_files = false;
-    bool no_extrap = false;
-    bool show_nodes = false;
 
     // Create registry object
     Registry reg;
@@ -50,12 +45,11 @@ int main(int argc, char *argv[])
         }
         else if ((arg.compare("-noextrap")) == 0 || (arg.compare("/noextrap")) == 0)
         {
-            no_extrap = true;
+            reg.no_extrap_interp = true;
         }
         else if ((arg.compare("-shownodes")) == 0 || (arg.compare("/shownodes")) == 0)
         {
-            show_nodes = true;
-        }
+                }
         else if ((arg.compare("-O")) == 0 || (arg.compare("/O")) == 0)
         {
             std::advance(it, 1);
@@ -72,8 +66,8 @@ int main(int argc, char *argv[])
                 reg.include_dirs.push_back(*it);
             }
         }
-        else if ((arg.compare("-template")) == 0 || (arg.compare("-registry")) == 0 ||
-                 (arg.compare("/template")) == 0 || (arg.compare("/registry")) == 0)
+        else if ((arg.compare("-template")) == 0 || (arg.compare("-registry")) == 0 || (arg.compare("/template")) == 0 ||
+                 (arg.compare("/registry")) == 0)
         {
             std::advance(it, 1);
             if (it != arguments.end())
@@ -98,8 +92,7 @@ int main(int argc, char *argv[])
 
             bool is_template = arg.substr(1).compare("template") == 0;
 
-            return output_template(module_name, module_nickname, output_force_template,
-                                   is_template);
+            return output_template(module_name, module_nickname, output_force_template, is_template);
         }
         else if ((arg.compare("-h") == 0) || (arg.compare("/h") == 0))
         {
@@ -131,8 +124,7 @@ int main(int argc, char *argv[])
     return EXIT_SUCCESS;
 }
 
-int output_template(std::string &module_name, std::string &module_nickname,
-                    bool overwrite, bool is_template)
+int output_template(std::string &module_name, std::string &module_nickname, bool overwrite, bool is_template)
 {
     // Create file name depending on if template or registry
     std::string fname = module_name + (is_template ? ".f90" : "_Registry.txt");
@@ -144,9 +136,7 @@ int output_template(std::string &module_name, std::string &module_nickname,
         if (infile.good())
         {
             std::cerr << "Registry exiting. Attempt to overwrite file (" << fname;
-            std::cerr
-                << ") . Move out of the way or specify -force before -template option. "
-                << std::endl;
+            std::cerr << ") . Move out of the way or specify -force before -template option. " << std::endl;
             return EXIT_FAILURE;
         }
     }
