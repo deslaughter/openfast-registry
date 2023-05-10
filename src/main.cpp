@@ -8,15 +8,35 @@
 
 int output_template(std::string &module_name, std::string &module_nickname, bool overwrite, bool is_template);
 
-const std::string thisprog_ver = "FAST Registry";
+const std::string usage_template = R""""(
+Usage: openfast_registry registryfile [options] -or-
+          [-force] [-template|-registry] ModuleName ModName 
+Options:
+    -h                this summary
+    -I <dir>          look for usefrom files in directory "dir"
+    -O <dir>          generate types files in directory "dir"
+    -noextrap         do not generate ModName_Input_ExtrapInterp or ModName_Output_ExtrapInterp routines
+    -D<SYM>           define symbol for conditional evaluation inside registry file
+    -ccode            generate additional code for interfacing with C/C++
+    -keep             do not delete temporary files from registry program
+    -shownodes        output a listing of the nodes in registry's AST
+  === alternate usage for generating templates ===
+    -template ModuleName ModName
+                 Generate a template Module file none exists
+    -registry ModuleName ModName
+                 Generate a template registry file if none exists
+    -force Force generating of template or registry file
+  (the / character can be used in place of - when specifying options)
+)"""";
 
 int main(int argc, char *argv[])
 {
     std::cerr << std::endl;
-    std::cerr << "----- " << thisprog_ver << " --------------" << std::endl;
-    std::cerr << "----------------------------------------------------------" << std::endl;
+    std::cerr << "------------------------------------------------------------" << std::endl;
+    std::cerr << "-------------------- OpenFAST Registry ---------------------" << std::endl;
+    std::cerr << "------------------------------------------------------------" << std::endl;
 
-    // Read command line arguments
+    // Read command line arguments into a vector
     std::vector<std::string> arguments;
     for (int i = 0; i < argc; ++i)
     {
@@ -49,7 +69,7 @@ int main(int argc, char *argv[])
         }
         else if ((arg.compare("-shownodes")) == 0 || (arg.compare("/shownodes")) == 0)
         {
-                }
+        }
         else if ((arg.compare("-O")) == 0 || (arg.compare("/O")) == 0)
         {
             std::advance(it, 1);
@@ -113,12 +133,13 @@ int main(int argc, char *argv[])
     }
 
     // Parse the registry file
-    if (reg.parse(inp_file_name, true) != 0)
+    if (reg.parse(inp_file_name, 0) != 0)
     {
         std::cerr << "Error parsing " << inp_file_name << ". Ending." << std::endl;
         return EXIT_FAILURE;
     }
 
+    // Generate module files
     reg.gen_module_files(out_dir);
 
     return EXIT_SUCCESS;

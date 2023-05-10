@@ -43,18 +43,21 @@ struct Field;
 
 struct DataType
 {
-    enum class Type
+    enum class Tag
     {
-        Simple,
+        Integer,
+        Real,
+        Logical,
+        Character,
         Derived,
     };
 
-    struct Simple
+    struct Basic
     {
         std::string name;
-        std::string maps_to_fortran;
-        std::string maps_to_c;
+        std::string type_fortran;
         std::string string_len;
+        int bit_size = 0;
     };
 
     struct Derived
@@ -64,35 +67,91 @@ struct DataType
         std::string name_prefixed;
         std::shared_ptr<Module> module;
         std::vector<Field> fields;
-        bool contains_pointer = false;
+        bool contains_mesh = false;
         bool is_interface = false;
-        size_t max_dims = 0;
+        int max_rank = 0;
     };
 
-    Type type;
+    Tag tag;
 
-    Simple simple;
+    Basic basic;
     Derived derived;
 
-    // Constructor for simple type
-    DataType(const std::string &name, const std::string &maps_to_fortran, const std::string &maps_to_c) : type(Type::Simple)
+    // Constructor for basic type
+    DataType(const std::string &name, const std::string &type_fortran, const Tag &type, const int bit_size = 0,
+             const std::string &string_len = "")
+        : tag(type)
     {
-        this->simple.name = name;
-        this->simple.maps_to_fortran = maps_to_fortran;
-        this->simple.maps_to_c = maps_to_c;
+        this->basic.name = name;
+        this->basic.type_fortran = type_fortran;
+        this->basic.string_len = string_len;
+        this->basic.bit_size = bit_size;
     }
 
     // Constructor for derived type
     DataType(std::shared_ptr<Module> mod, const std::string &name, const std::string &name_short = "",
-             const std::string &name_prefixed = "", const bool is_interface = false, const bool contains_pointer = false)
-        : type(Type::Derived)
+             const std::string &name_prefixed = "", const bool is_interface = false,
+             const bool contains_pointer = false)
+        : tag(Tag::Derived)
     {
         this->derived.name = name;
         this->derived.module = mod;
         this->derived.name_short = name_short.empty() ? name : name_short;
         this->derived.name_prefixed = name_prefixed.empty() ? name : name_prefixed;
         this->derived.is_interface = is_interface;
-        this->derived.contains_pointer = contains_pointer;
+        this->derived.contains_mesh = contains_pointer;
+    }
+
+    std::string c_type()
+    {
+        switch (this->tag)
+        {
+        case DataType::Tag::Integer:
+            return "int";
+        case DataType::Tag::Logical:
+            return "bool";
+        case DataType::Tag::Character:
+            return "char";
+        case DataType::Tag::Real:
+            switch (this->basic.bit_size)
+            {
+            case 0:
+                return "float";
+            case 32:
+                return "float";
+            case 64:
+                return "double";
+            }
+        case DataType::Tag::Derived:
+            return "invalid";
+        }
+        return "invalid";
+    }
+
+    std::string c_types_binding()
+    {
+        switch (this->tag)
+        {
+        case DataType::Tag::Integer:
+            return "INTEGER(KIND=C_INT)";
+        case DataType::Tag::Logical:
+            return "LOGICAL(KIND=C_BOOL)";
+        case DataType::Tag::Character:
+            return "CHARACTER(KIND=C_CHAR), DIMENSION(" + this->basic.string_len + ")";
+        case DataType::Tag::Real:
+            switch (this->basic.bit_size)
+            {
+            case 0:
+                return "REAL(KIND=C_FLOAT)";
+            case 32:
+                return "REAL(KIND=C_FLOAT)";
+            case 64:
+                return "REAL(KIND=C_DOUBLE)";
+            }
+        case DataType::Tag::Derived:
+            return "INVALID";
+        }
+        return "INVALID";
     }
 };
 
@@ -101,8 +160,8 @@ struct DimSpec
     size_t i;
     bool is_deferred = false;
     bool is_pointer = false;
-    int lower_bound = 1;
-    int upper_bound = -1;
+    std::string lower_bound = "1";
+    std::string upper_bound = "-1";
 
     DimSpec(std::string spec)
     {
@@ -117,10 +176,10 @@ struct DimSpec
             this->is_deferred = spec.size() == 1;
 
             // If colon isn't first, then parse the lower bound, otherwise 1
-            this->lower_bound = i > 0 ? std::stoi(spec.substr(0, i)) : 1;
+            this->lower_bound = i > 0 ? spec.substr(0, i) : "1";
 
             // Parse the upper bound
-            this->upper_bound = this->is_deferred ? -1 : std::stoi(spec.substr(i + 1));
+            this->upper_bound = this->is_deferred ? "-1" : spec.substr(i + 1);
         }
         // If asterisk was found
         else if (j != std::string::npos)
@@ -128,10 +187,11 @@ struct DimSpec
             this->is_deferred = true;
             this->is_pointer = true;
         }
+        // Otherwise, spec contains upper bound
         else
         {
-            this->lower_bound = 1;
-            this->upper_bound = std::stoi(spec);
+            this->lower_bound = "1";
+            this->upper_bound = spec;
         }
     }
 };
@@ -139,47 +199,77 @@ struct DimSpec
 struct Field
 {
     std::string name;
-    std::shared_ptr<DataType> type;
+    std::shared_ptr<DataType> data_type;
     std::vector<DimSpec> dims;
     std::string init_value = "";
     std::string desc = "-";
     std::string units = "-";
     Period gen_periodic = Period::None;
-    int num_dims = 0;
-    int boundary_array = 0;
-    int sub_grid = 0;
+    int rank = 0;
     bool is_pointer = false;
+    bool is_allocatable = false;
 
-    Field(const std::string &name, std::shared_ptr<DataType> const &type, const std::string &dims, const std::string &ctrl,
-          const std::string &init_value, const std::string &desc, const std::string &units)
+    Field(const std::string &name, std::shared_ptr<DataType> const &type, const std::string &dims,
+          const std::string &ctrl, const std::string &init_value, const std::string &desc, const std::string &units)
     {
         this->name = name;
-        this->type = type;
+        this->data_type = type;
 
-        if (init_value.compare("-") != 0)
-            this->init_value = init_value;
-
-        if (ctrl.compare("2pi") != 0)
+        if (ctrl.compare("2pi") == 0)
+        {
             this->gen_periodic = Period::TwoPi;
+        }
 
         if (desc.compare("-") != 0)
+        {
             this->desc = desc;
+        }
 
         if (units.compare("-") != 0)
+        {
             this->units = units;
+        }
 
         if (dims.compare("-") != 0)
         {
             // Parse dims, throw exception on error
             if (this->parse_dims(dims) != 0)
+            {
                 throw std::invalid_argument("invalid dimensions: " + dims);
+            }
 
             // Add dimension number
             for (size_t i = 0; i < this->dims.size(); ++i)
+            {
                 this->dims[i].i = i + 1;
+            }
 
             // Field is a pointer if any dim is a pointer
-            this->is_pointer |= std::any_of(this->dims.begin(), this->dims.end(), [](const DimSpec &ds) { return ds.is_pointer; });
+            this->is_pointer =
+                std::any_of(this->dims.begin(), this->dims.end(), [](const DimSpec &ds) { return ds.is_pointer; });
+
+            // Field is allocatable if any dim is deferred
+            this->is_allocatable =
+                std::any_of(this->dims.begin(), this->dims.end(), [](const DimSpec &ds) { return ds.is_deferred; });
+
+            // Get field rank (number of dimensions)
+            this->rank = this->dims.size();
+        }
+
+        // If field is a pointer, initialize to null
+        if (this->is_pointer)
+        {
+            this->init_value = "null()";
+        }
+        // If field is allocatable, then no initialization
+        else if (this->is_allocatable)
+        {
+            this->init_value = "";
+        }
+        // If initialization is not empty
+        else if (init_value.compare("-") != 0)
+        {
+            this->init_value = init_value;
         }
     }
 
@@ -207,7 +297,9 @@ struct Field
             std::all_of(dim_field.begin(), dim_field.end(), [](char c) { return c == ':'; }))
         {
             for (auto &dim : dim_field)
+            {
                 this->dims.push_back(DimSpec(std::string(1, dim)));
+            }
             return 0;
         }
 
@@ -232,17 +324,23 @@ struct Parameter
     std::string desc = "-";
     std::string units = "-";
 
-    Parameter(const std::string &name, std::shared_ptr<DataType> &type, const std::string &value, const std::string &desc,
-              const std::string &units)
+    Parameter(const std::string &name, std::shared_ptr<DataType> &type, const std::string &value,
+              const std::string &desc, const std::string &units)
     {
         this->name = name;
         this->type = type;
         if (value.compare("-") != 0)
+        {
             this->value = value;
+        }
         if (desc.compare("-") != 0)
+        {
             this->desc = desc;
+        }
         if (desc.compare("-") != 0)
+        {
             this->desc = desc;
+        }
     }
 };
 
@@ -276,6 +374,7 @@ struct Registry
 {
     std::vector<std::string> include_dirs = {"."};
     std::set<std::string> include_files;
+    std::vector<std::string> use_modules;
     std::map<std::string, InterfaceData, ci_less> interface_names;
     std::map<std::string, std::shared_ptr<Module>, ci_less> modules;
     std::map<std::string, std::shared_ptr<DataType>, ci_less> data_types;
@@ -284,14 +383,14 @@ struct Registry
 
     Registry()
     {
-        // Simple types
-        auto IntKi = std::make_shared<DataType>("IntKi", "INTEGER(IntKi)", "int");
-        auto SiKi = std::make_shared<DataType>("SiKi", "REAL(SiKi)", "float");
-        auto R4Ki = std::make_shared<DataType>("R4Ki", "REAL(R4Ki)", "float");
-        auto ReKi = std::make_shared<DataType>("ReKi", "REAL(ReKi)", "float");
-        auto R8Ki = std::make_shared<DataType>("R8Ki", "REAL(R8Ki)", "float");
-        auto DbKi = std::make_shared<DataType>("DbKi", "REAL(DbKi)", "double");
-        auto logical = std::make_shared<DataType>("Logical", "LOGICAL", "bool");
+        // Basic types
+        auto IntKi = std::make_shared<DataType>("IntKi", "INTEGER(IntKi)", DataType::Tag::Integer, 32);
+        auto SiKi = std::make_shared<DataType>("SiKi", "REAL(SiKi)", DataType::Tag::Real, 32);
+        auto R4Ki = std::make_shared<DataType>("R4Ki", "REAL(R4Ki)", DataType::Tag::Real, 32);
+        auto ReKi = std::make_shared<DataType>("ReKi", "REAL(ReKi)", DataType::Tag::Real);
+        auto R8Ki = std::make_shared<DataType>("R8Ki", "REAL(R8Ki)", DataType::Tag::Real, 64);
+        auto DbKi = std::make_shared<DataType>("DbKi", "REAL(DbKi)", DataType::Tag::Real, 64);
+        auto logical = std::make_shared<DataType>("Logical", "LOGICAL", DataType::Tag::Logical);
 
         // Derived types
         auto mesh = std::make_shared<DataType>(nullptr, "MeshType", "MeshType", "MeshType", false, true);
@@ -325,9 +424,9 @@ struct Registry
     }
 
     // Parsing
-    int parse(const std::string &file_name, const bool is_root);
-    int parse_line(std::string line, std::vector<std::string> &fields_prev, bool is_root);
-    std::shared_ptr<DataType> find_type(const std::string &type_name, std::shared_ptr<Module> mod = nullptr)
+    int parse(const std::string &file_name, const int recurse_level);
+    int parse_line(std::string line, std::vector<std::string> &fields_prev, const int recurse_level);
+    std::shared_ptr<DataType> find_data_type(const std::string &type_name, std::shared_ptr<Module> mod = nullptr)
     {
         // Pointer to type
         std::shared_ptr<DataType> data_type;
@@ -349,12 +448,8 @@ struct Registry
             // Get string length
             auto string_len = type_name.substr(10, type_name.size() - 11);
 
-            // C type
-            auto c_type = "char[" + string_len + "]";
-
             // Build type
-            data_type = std::make_shared<DataType>(type_name, type_name, c_type);
-            data_type->simple.string_len = string_len;
+            data_type = std::make_shared<DataType>(type_name, type_name, DataType::Tag::Character, 0, string_len);
 
             // Add type to registry
             this->data_types[type_name] = data_type;

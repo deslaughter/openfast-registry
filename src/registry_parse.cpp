@@ -1,20 +1,20 @@
-
 #include <fstream>
 #include <iostream>
 #include <memory>
 #include <regex>
+#include <stdexcept>
 
 #include "registry.hpp"
 
 const int MAX_FIELDS = 10;
 
-int Registry::parse(const std::string &file_name, const bool is_root)
+int Registry::parse(const std::string &file_name, const int recurse_level)
 {
     std::ifstream inp_file;
     std::vector<std::string> fields_prev;
 
     // If this is the root file, open given file name
-    if (is_root)
+    if (recurse_level == 0)
     {
         std::cerr << "input file: " << file_name << std::endl;
         inp_file.open(file_name);
@@ -30,21 +30,24 @@ int Registry::parse(const std::string &file_name, const bool is_root)
     {
         // If this include file has been parsed, return
         if (this->include_files.find(file_name) != this->include_files.end())
+        {
             return 0;
+        }
 
         // Loop through directories and try to open file, break on success
         for (auto &dir : this->include_dirs)
         {
             inp_file.open(dir + "/" + file_name);
             if (inp_file)
+            {
                 break;
+            }
         }
 
         // If file not opened successfully, return error
         if (!inp_file)
         {
-            std::cerr << "Registry warning: cannot open " << file_name << ". Ignoring."
-                      << std::endl;
+            std::cerr << "Registry warning: cannot open " << file_name << ". Ignoring." << std::endl;
             return 0;
         }
 
@@ -60,11 +63,20 @@ int Registry::parse(const std::string &file_name, const bool is_root)
     for (size_t line_num = 1; std::getline(inp_file, line); ++line_num)
     {
         // Parse line into record
-        if (this->parse_line(line, fields_prev, is_root) != 0)
+        if (this->parse_line(line, fields_prev, recurse_level) != 0)
         {
             std::cerr << "Error reading " << file_name << ":" << line_num << "\n";
             break;
         }
+    }
+
+    // If this file is included by the root file, save module
+    if (recurse_level == 1)
+    {
+        auto slash_index = fields_prev[1].find("/");
+        bool has_slash = slash_index != std::string::npos;
+        auto module_name = has_slash ? fields_prev[1].substr(0, slash_index) : fields_prev[1];
+        this->use_modules.push_back(module_name);
     }
 
     return 0;
@@ -76,8 +88,7 @@ const std::regex strip_start("^\\s+");
 const std::regex strip_end("\\s+$");
 const std::sregex_token_iterator re_end;
 
-int Registry::parse_line(std::string line, std::vector<std::string> &fields_prev,
-                         bool is_root)
+int Registry::parse_line(std::string line, std::vector<std::string> &fields_prev, int recurse_level)
 {
     // Remove leading and trailing space from line
     line = std::regex_replace(line, strip_start, "");
@@ -85,31 +96,41 @@ int Registry::parse_line(std::string line, std::vector<std::string> &fields_prev
 
     // If comment or empty line, continue
     if (line.size() == 0 || line[0] == '#')
+    {
         return 0;
+    }
 
     // Split line into fields by quotes
     std::vector<std::string> fields;
     int counter = 0;
     std::sregex_token_iterator iter(line.begin(), line.end(), quote_split_re, -1);
-    for (; iter != re_end; ++iter)
+    auto end = false;
+    for (; iter != re_end && !end; ++iter)
     {
         ++counter;
         // If quoted field, add to fields
         if (counter % 2 == 0)
         {
-            // if (!std::string(*iter).empty())
             fields.push_back(*iter);
         }
         // Otherwise, split by space
         else
         {
             std::string field = *iter;
-            std::sregex_token_iterator iter(field.begin(), field.end(), space_split_re,
-                                            -1);
+            std::sregex_token_iterator iter(field.begin(), field.end(), space_split_re, -1);
             for (; iter != re_end; ++iter)
             {
+                // If string is not empty
                 if (!std::string(*iter).empty())
+                {
+                    // If string contains a hash, set end flag and break
+                    if (std::string(*iter).find("#") != std::string::npos)
+                    {
+                        end = true;
+                        break;
+                    }
                     fields.push_back(*iter);
+                }
             }
         }
     }
@@ -118,11 +139,10 @@ int Registry::parse_line(std::string line, std::vector<std::string> &fields_prev
     // Include Line
     //--------------------------------------------------------------------------
 
-    if (fields.size() == 2 &&
-        (fields[0].compare("include") == 0 || fields[0].compare("usefrom") == 0))
+    if (fields.size() == 2 && (fields[0].compare("include") == 0 || fields[0].compare("usefrom") == 0))
     {
         auto file_name = fields[1];
-        if (this->parse(file_name, false) != 0)
+        if (this->parse(file_name, recurse_level + 1) != 0)
         {
             std::cerr << "error parsing" << file_name << std::endl;
             return -1;
@@ -151,6 +171,9 @@ int Registry::parse_line(std::string line, std::vector<std::string> &fields_prev
 
     // Shared pointer to module
     std::shared_ptr<Module> mod;
+
+    // Is this the root module
+    auto is_root = recurse_level == 0;
 
     // Parse module name and nickname from field
     auto slash_index = fields[1].find("/");
@@ -183,11 +206,10 @@ int Registry::parse_line(std::string line, std::vector<std::string> &fields_prev
         auto units = fields[9];
 
         // Find parameter type in registry, display message if not found
-        auto param_type = this->find_type(type);
+        auto param_type = this->find_data_type(type);
         if (param_type == nullptr)
         {
-            std::cerr << "Registry warning: type " << type << " used before defined for "
-                      << name << std::endl;
+            std::cerr << "Registry warning: type " << type << " used before defined for " << name << std::endl;
         }
 
         // Add parameter to module
@@ -202,7 +224,7 @@ int Registry::parse_line(std::string line, std::vector<std::string> &fields_prev
     if ((fields[0].compare("typedef") == 0) || (fields[0].compare("usefrom") == 0))
     {
         auto ddt_name_base = fields[2];
-        auto type = fields[3];
+        auto field_type_name = fields[3];
         auto name = fields[4];
         auto dims = fields[5];
         auto init_value = fields[6];
@@ -217,71 +239,93 @@ int Registry::parse_line(std::string line, std::vector<std::string> &fields_prev
         // Remove module prefix from name
         std::string prefix = tolower(mod->nickname) + "_";
         if (tolower(ddt_name_short).compare(0, prefix.size(), prefix) == 0)
+        {
             ddt_name_short = ddt_name_short.substr(prefix.size());
+        }
 
         // If interface name was found for derived data type, prepend module nickname
         auto it = this->interface_names.find(ddt_name_short);
         auto is_interface_type = it != this->interface_names.end();
         if (is_interface_type)
+        {
             ddt_name = mod->nickname + "_" + ddt_name_short;
+        }
 
-        // Get derived data type from module
-        auto ddt = this->find_type(ddt_name, mod);
+        // Get data type from module
+        auto ddt_dt = this->find_data_type(ddt_name, mod);
 
         // If struct type not found and module is not root, get from registry
-        if (ddt == nullptr && !mod->is_root)
-            ddt = this->find_type(ddt_name);
+        if (ddt_dt == nullptr && !mod->is_root)
+        {
+            ddt_dt = this->find_data_type(ddt_name);
+        }
 
         // If derived data type not found, create and add to module or registry
-        if (ddt == nullptr)
+        if (ddt_dt == nullptr)
         {
             // Get short name from interface if this is an interface type
             if (is_interface_type)
-                ddt_name_short = it->second.name_short;
-
-            // Create derived data type
-            ddt = std::make_shared<DataType>(mod, ddt_name_base, ddt_name_short, ddt_name,
-                                             is_interface_type);
-
-            // Add type to registry if not root, else add to module
-            if (!is_root)
             {
-                this->data_types[ddt_name] = ddt;
+                ddt_name_short = it->second.name_short;
+            }
+            // Create derived data type
+            ddt_dt = std::make_shared<DataType>(mod, ddt_name_base, ddt_name_short, ddt_name, is_interface_type);
+
+            // Add type module if this is root; otherwise, add to registry
+            if (is_root)
+            {
+                mod->data_types[ddt_name] = ddt_dt;
+                mod->data_type_order.push_back(ddt_name);
             }
             else
             {
-                mod->data_types[ddt_name] = ddt;
-                mod->data_type_order.push_back(ddt_name);
+                this->data_types[ddt_name] = ddt_dt;
             }
         }
 
-        // Get field type from module or registry
-        auto field_type = this->find_type(type, mod);
-        if (field_type == nullptr)
-            field_type = this->find_type(type);
-        if (field_type == nullptr)
+        // Get field data type from module or registry
+        auto field_dt = this->find_data_type(field_type_name, mod);
+        if (field_dt == nullptr)
         {
-            std::cerr << "Registry warning: type " << type << " used before defined for "
-                      << name << std::endl;
+            field_dt = this->find_data_type(field_type_name);
+        }
+        if (field_dt == nullptr)
+        {
+            std::cerr << "Error: type " << field_type_name << " used before defined for " << name << std::endl;
+            return 1;
         }
 
         // Create field
-        Field field(name, field_type, dims, ctrl, init_value, desc, units);
+        Field field(name, field_dt, dims, ctrl, init_value, desc, units);
 
-        // Collect field dimensions into type maximum dimensions
-        ddt->derived.max_dims = std::max(field.dims.size(), ddt->derived.max_dims);
+        // If C code will be generated, then field is a pointer if it's allocatable,
+        // not a derived type, and the field name doesn't start with "writeoutput"
+        if (this->gen_c_code && field.is_allocatable)
+        {
+            field.is_pointer |= (tolower(field.name.substr(0, 11)).compare("writeoutput") != 0) &&
+                                (field.data_type->tag != DataType::Tag::Derived);
+        }
 
-        // Accumulate if derived type contains pointer from field being a pointer
-        // or field type containing a pointer
-        ddt->derived.contains_pointer |=
-            field.is_pointer |
-            (field.type != nullptr && field.type->derived.contains_pointer);
+        // If field is a mesh derived type (MeshType or MeshMapType)
+        // or a derived type that contains a mesh,
+        // set flag in derived data type
+        if ((field.data_type->tag == DataType::Tag::Derived) &&
+            (tolower(field.data_type->derived.name).compare("meshtype") == 0 ||
+             tolower(field.data_type->derived.name).compare("meshmaptype") == 0 ||
+             field.data_type->derived.contains_mesh))
+        {
+            ddt_dt->derived.contains_mesh = true;
+        }
 
-        // Create field and add to struct
-        ddt->derived.fields.push_back(field);
+        // Accumulate max rank of fields in derived data type
+        ddt_dt->derived.max_rank = std::max(ddt_dt->derived.max_rank, field.rank);
+
+        // Add field to derived data type
+        ddt_dt->derived.fields.push_back(field);
         return 0;
     }
 
-    std::cerr << "warning: ignoring invalid line: '" << line << "'\n";
+    // Line is invalid
+    std::cerr << "Error: invalid line: '" << line << "'\n";
     return 1;
 }

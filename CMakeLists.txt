@@ -1,5 +1,5 @@
-project(registry CXX)
-cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.15)
+project(registry CXX Fortran)
 include(CTest) 
 
 add_executable(openfast_registry_cpp
@@ -12,5 +12,5 @@ add_executable(openfast_registry_cpp
   src/templates.hpp
 )
 
-set_property(TARGET openfast_registry_cpp PROPERTY CXX_STANDARD 11)
+set_property(TARGET openfast_registry_cpp PROPERTY CXX_STANDARD 17)
 add_subdirectory(test)
