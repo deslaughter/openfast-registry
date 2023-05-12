@@ -4,40 +4,110 @@
 #include <fstream>
 #include <iostream>
 
-int Registry::gen_c_module(const Module &mod, const std::string &out_dir)
+void Registry::gen_c_module(const Module &mod, const std::string &out_dir)
 {
     auto file_name = mod.name + "_Types.h";
     auto file_path = out_dir + "/" + file_name;
     std::cerr << "generating " << file_name << std::endl;
 
-    std::ofstream out(file_path);
-    if (!out)
+    // Open output file, return if error
+    std::ofstream w(file_path);
+    if (!w)
     {
-        std::cerr << "error creating module file: '" << file_path << "'\n";
-        return -1;
+        std::cerr << "Error creating module file: '" << file_path << "'\n";
+        return;
     }
 
-    out << "//STARTOFREGISTRYGENERATEDFILE '" << file_name << "'\n";
-    out << "//\n";
-    out << "// WARNING This file is generated automatically by the FAST "
-           "registry.\n";
-    out << "// Do not edit.  Your changes to this file will be lost.\n";
-    out << "//\n";
+    w << "//!STARTOFREGISTRYGENERATEDFILE '" << file_name << "'\n";
+    w << "//!\n";
+    w << "//! WARNING This file is generated automatically by the FAST "
+         "registry.\n";
+    w << "//! Do not edit.  Your changes to this file will be lost.\n";
+    w << "//!\n";
+    w << "\n";
+    w << "#ifndef _" << mod.name << "_TYPES_H\n";
+    w << "#define _" << mod.name << "_TYPES_H\n\n";
+    w << "\n";
+    w << "#ifdef _WIN32 //define something for Windows (32-bit)\n";
+    w << "#  include \"stdbool.h\"\n";
+    w << "#  define CALL __declspec( dllexport )\n";
+    w << "#elif _WIN64 //define something for Windows (64-bit)\n";
+    w << "#  include \"stdbool.h\"\n";
+    w << "#  define CALL __declspec( dllexport ) \n";
+    w << "#else\n";
+    w << "#  include <stdbool.h>\n";
+    w << "#  define CALL \n";
+    w << "#endif\n";
+    w << "\n\n";
 
-    out << "\n#ifndef _" << mod.name << "_TYPES_H\n";
-    out << "#define _" << mod.name << "_TYPES_H\n\n";
-    out << "\n#ifdef _WIN32 //define something for Windows (32-bit)\n";
-    out << "#  include \"stdbool.h\"\n";
-    out << "#  define CALL __declspec( dllexport )\n";
-    out << "#elif _WIN64 //define something for Windows (64-bit)\n";
-    out << "#  include \"stdbool.h\"\n";
-    out << "#  define CALL __declspec( dllexport ) \n";
-    out << "#else\n";
-    out << "#  include <stdbool.h>\n";
-    out << "#  define CALL \n";
-    out << "#endif\n\n\n";
+    // Loop through data types in module
+    for (auto &dt_name : mod.data_type_order)
+    {
+        // Get derive data types in module
+        auto it = mod.data_types.find(dt_name);
+        auto &dt = *it->second;
+        if (dt.tag != DataType::Tag::Derived)
+            continue;
+        auto &ddt = dt.derived;
 
-    out << "\n#endif // _" << mod.name << "_TYPES_H\n\n\n";
-    out << "//ENDOFREGISTRYGENERATEDFILE\n";
-    return 0;
+        w << "  typedef struct " << ddt.name_prefixed << " {\n";
+        w << "    void * object ;\n";
+        for (const auto &field : ddt.fields)
+        {
+            if (field.data_type->tag == DataType::Tag::Derived)
+            {
+                // TODO:Support derived types
+            }
+            else // Basic Type
+            {
+                if (field.is_allocatable)
+                {
+                    w << "    " << field.data_type->c_type() << " * " << field.name << " ;     int "
+                      << field.name << "_Len ;";
+                }
+                else if (field.data_type->tag == DataType::Tag::Character)
+                {
+                    if (field.rank == 0)
+                    {
+                        w << "    " << field.data_type->c_type() << " " << field.name << "["
+                          << field.data_type->basic.string_len << "] ;";
+                    }
+                }
+                else
+                {
+                    w << "    " << field.data_type->c_type() << " " << field.name << " ;";
+                }
+            }
+            for (int i = 0; i < field.rank; i++)
+            {
+                if (!field.is_allocatable &&
+                    (field.data_type->tag != DataType::Tag::Character || field.rank == 0))
+                    w << "[" << field.dims[i].upper_bound << "-" << field.dims[i].lower_bound
+                      << "+1] ;";
+            }
+            w << "\n";
+        }
+        w << "  } " << ddt.name_prefixed << "_t ;\n";
+    }
+
+    w << "  typedef struct " << mod.nickname << "_UserData {\n";
+    for (auto &dt_name : mod.data_type_order)
+    {
+        // Get derived data types with interfaces
+        auto it = mod.data_types.find(dt_name);
+        auto &dt = *it->second;
+        if (dt.tag != DataType::Tag::Derived)
+            continue;
+        auto &ddt = dt.derived;
+        if (ddt.interface == nullptr)
+            continue;
+
+        // Write name
+        w << "    " << std::setw(30) << std::left << ddt.name_prefixed + "_t"
+          << " " << mod.nickname << "_" << ddt.interface->name_short << " ;\n";
+    }
+    w << "  } " << mod.nickname << "_t ;\n";
+
+    w << "\n#endif // _" << mod.name << "_TYPES_H\n\n\n";
+    w << "//!ENDOFREGISTRYGENERATEDFILE\n";
 }
