@@ -1,13 +1,12 @@
 #include <fstream>
-#include <iostream>
 
 #include "registry.hpp"
 #include "templates.hpp"
 
 const int MAXRECURSE = 9;
 
-void gen_ExtrapInterp(std::ostream &w, const Module &mod, std::string type_name,
-                      std::string type_name_long, std::string type_kind, const bool useModPrefix);
+void gen_ExtrapInterp(std::ostream &w, const Module &mod, std::string type_name_long,
+                      std::string type_kind, const bool useModPrefix);
 void gen_copy(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
               const bool gen_c_code);
 void gen_destroy(std::ostream &out, const Module &mod, const DataType::Derived &ddt,
@@ -66,12 +65,12 @@ void Registry::gen_fortran_module(const Module &mod, const std::string &out_dir)
     auto file_path = out_dir + "/" + file_name;
     std::cerr << "generating " << file_name << std::endl;
 
-    // Open file, return if error
+    // Open file, exit if error
     std::ofstream w(file_path);
     if (!w)
     {
         std::cerr << "Error creating module file: '" << file_path << "'" << std::endl;
-        return;
+        exit(EXIT_FAILURE);
     }
 
     // Write preamble
@@ -79,65 +78,45 @@ void Registry::gen_fortran_module(const Module &mod, const std::string &out_dir)
 
     // Output USE statements for non-root modules
     for (auto const &mod : this->use_modules)
-    {
         if (tolower(mod).compare("nwtc_library") != 0)
-        {
             w << "USE " << mod << "_Types\n";
-        }
-    }
 
-    // if this is the NWTC Library, we're not going to print "USE NWTC_Library"
+    // If this is the NWTC Library, we're not going to print "USE NWTC_Library"
     if (tolower(mod.name).compare("nwtc_library") == 0)
-    {
         w << "USE SysSubs\n";
-    }
     else
-    {
         w << "USE NWTC_Library\n";
-    }
 
     w << "IMPLICIT NONE\n";
 
-    // output parameters
-    for (auto &param : mod.params)
+    // Write parameters to file
+    for (const auto &param : mod.params)
     {
-        w << "    " << param.type->basic.type_fortran << ", PUBLIC, PARAMETER ";
-        w << " :: " << param.name;
+        w << "    " << param.type->basic.type_fortran << ", PUBLIC, PARAMETER  :: " << param.name;
 
         if (!param.value.empty())
-        {
             w << " = " << param.value;
-        }
 
         if (param.desc.compare("-") != 0 || param.units.compare("-") != 0)
-        {
             w << "      ! " << param.desc << " [" << param.units << "]";
-        }
+
         w << "\n";
     }
 
     // Loop through data type names in module
-    for (auto &dt_name : mod.data_type_order)
+    for (auto &dt_name : mod.ddt_names)
     {
-        // Get data type
-        auto it = mod.data_types.find(dt_name);
-        auto &data_type = *it->second;
-
-        // If not a derived data type, continue
-        if (data_type.tag != DataType::Tag::Derived)
-            continue;
-
         // Get derived data type
-        auto &ddt = data_type.derived;
+        auto &ddt = mod.data_types.find(dt_name)->second->derived;
 
         // If derived data type should only contain reals,
-        // verify that it does, return error if not
-        if ((ddt.interface != nullptr) && ddt.interface->only_reals && !ddt.only_contains_reals())
-            return;
+        // verify that it does, otherwise exit with error
+        if ((ddt.interface != nullptr) && ddt.interface->only_reals)
+            if (!ddt.only_contains_reals())
+                exit(EXIT_FAILURE);
 
         // Write derived type header
-        w << "! =========  " << ddt.name_prefixed << (this->gen_c_code ? "_C" : "")
-          << "  =======\n";
+        w << "! =========  " << ddt.type_fortran << (this->gen_c_code ? "_C" : "") << "  =======\n";
 
         // 2 passes for C  code, 1st pass generates bound ddt
         for (int ipass = (this->gen_c_code) ? 0 : 1; ipass < 2; ipass++)
@@ -145,16 +124,16 @@ void Registry::gen_fortran_module(const Module &mod, const std::string &out_dir)
             bool is_C_pass = ipass == 0;
 
             if (is_C_pass)
-                w << "  TYPE, BIND(C) :: " << ddt.name_prefixed << "_C\n";
+                w << "  TYPE, BIND(C) :: " << ddt.type_fortran << "_C\n";
             else
-                w << "  TYPE, PUBLIC :: " << ddt.name_prefixed << "\n";
+                w << "  TYPE, PUBLIC :: " << ddt.type_fortran << "\n";
 
             if (this->gen_c_code)
             {
                 if (is_C_pass)
                     w << "   TYPE(C_PTR) :: object = C_NULL_PTR\n";
                 else
-                    w << "    TYPE( " << ddt.name_prefixed << "_C ) :: C_obj\n";
+                    w << "    TYPE( " << ddt.type_fortran << "_C ) :: C_obj\n";
             }
 
             // Loop through fields
@@ -193,7 +172,7 @@ void Registry::gen_fortran_module(const Module &mod, const std::string &out_dir)
                 {
                     if (field.data_type->tag == DataType::Tag::Derived)
                     {
-                        w << "    TYPE(" << field.data_type->derived.name_prefixed << ") ";
+                        w << "    TYPE(" << field.data_type->derived.type_fortran << ") ";
                     }
                     else
                     {
@@ -255,8 +234,7 @@ void Registry::gen_fortran_module(const Module &mod, const std::string &out_dir)
                 }
             }
 
-            w << "  END TYPE " << data_type.derived.name_prefixed << (is_C_pass ? "_C" : "")
-              << "\n";
+            w << "  END TYPE " << ddt.type_fortran << (is_C_pass ? "_C" : "") << "\n";
         }
 
         w << "! =======================\n";
@@ -265,41 +243,41 @@ void Registry::gen_fortran_module(const Module &mod, const std::string &out_dir)
     w << "CONTAINS\n";
 
     // Loop through derived data types
-    for (auto &dt_name : mod.data_type_order)
+    for (auto &dt_name : mod.ddt_names)
     {
-        // Get data type
-        auto it = mod.data_types.find(dt_name);
-        auto &data_type = *it->second;
+        // Get derived data type
+        auto &ddt = mod.data_types.find(dt_name)->second->derived;
 
-        // Generate functions
-        gen_copy(w, mod, data_type.derived, this->gen_c_code);
-        gen_destroy(w, mod, data_type.derived, this->gen_c_code);
-        gen_pack(w, mod, data_type.derived, this->gen_c_code);
-        gen_unpack(w, mod, data_type.derived, this->gen_c_code);
+        // Generate copy, destroy, pack, and unpack routines
+        gen_copy(w, mod, ddt, this->gen_c_code);
+        gen_destroy(w, mod, ddt, this->gen_c_code);
+        gen_pack(w, mod, ddt, this->gen_c_code);
+        gen_unpack(w, mod, ddt, this->gen_c_code);
 
+        // If C code generation requested
         if (this->gen_c_code)
         {
-            gen_copy_c2f(w, mod, data_type.derived);
-            gen_copy_f2c(w, mod, data_type.derived);
+            // Generate C <-> Fortran copy functions
+            gen_copy_c2f(w, mod, ddt);
+            gen_copy_f2c(w, mod, ddt);
         }
     }
 
-    // make interpolation routines for AirfoilInfo module
+    // If this is the AirfoilInfo module, generate routines for Output and UA_BL_Type
     if (tolower(mod.name).compare("airfoilinfo") == 0)
     {
-        gen_ExtrapInterp(w, mod, "Output", "OutputType", "ReKi", 1);
-        gen_ExtrapInterp(w, mod, "UA_BL_Type", "UA_BL_Type", "ReKi", 1);
+        gen_ExtrapInterp(w, mod, "OutputType", "ReKi", 1);
+        gen_ExtrapInterp(w, mod, "UA_BL_Type", "ReKi", 1);
     }
     else if (!this->no_extrap_interp)
     {
-        // make interpolation routines for element-level DBEMT module
+        // If this is the DBEMT module make extrap/interp for ElementInput
         if (tolower(mod.name).compare("dbemt") == 0)
-        {
-            gen_ExtrapInterp(w, mod, "ElementInputType", "ElementInputType", "DbKi", 1);
-        }
+            gen_ExtrapInterp(w, mod, "ElementInputType", "DbKi", 1);
 
-        gen_ExtrapInterp(w, mod, "Input", "InputType", "DbKi", 1);
-        gen_ExtrapInterp(w, mod, "Output", "OutputType", "DbKi", 1);
+        // Generate extrap/interp routines for module input and output types
+        gen_ExtrapInterp(w, mod, "InputType", "DbKi", 1);
+        gen_ExtrapInterp(w, mod, "OutputType", "DbKi", 1);
     }
 
     w << "END MODULE " << mod.name << "_Types\n";
@@ -311,9 +289,9 @@ void gen_copy(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
 {
     w << " SUBROUTINE " << mod.nickname << "_Copy" << ddt.name_short << "( Src" << ddt.name_short
       << "Data, Dst" << ddt.name_short << "Data, CtrlCode, ErrStat, ErrMsg )\n";
-    w << "   TYPE(" << ddt.name_prefixed << "), INTENT(" << (ddt.contains_mesh ? "INOUT" : "IN")
+    w << "   TYPE(" << ddt.type_fortran << "), INTENT(" << (ddt.contains_mesh ? "INOUT" : "IN")
       << ") :: Src" << ddt.name_short << "Data\n";
-    w << "   TYPE(" << ddt.name_prefixed << "), INTENT(INOUT) :: Dst" << ddt.name_short << "Data\n";
+    w << "   TYPE(" << ddt.type_fortran << "), INTENT(INOUT) :: Dst" << ddt.name_short << "Data\n";
     w << "   INTEGER(IntKi),  INTENT(IN   ) :: CtrlCode\n";
     w << "   INTEGER(IntKi),  INTENT(  OUT) :: ErrStat\n";
     w << "   CHARACTER(*),    INTENT(  OUT) :: ErrMsg\n";
@@ -365,7 +343,7 @@ void gen_copy(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
                 w << "    " << dst_c << "_Len = SIZE(" << dst << ")\n";
                 w << "    IF (" << dst_c << "_Len > 0) &\n";
                 w << "          " << dst_c << " = C_LOC( " << dst << "(";
-                for (int d = 1; d <= field.dims.size(); d++)
+                for (int d = 1; d <= field.rank; d++)
                 {
                     w << (d > 1 ? "," : "") << " i" << d << "_l";
                 }
@@ -380,7 +358,7 @@ void gen_copy(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
         {
             auto &ddt = field.data_type->derived;
 
-            for (int d = field.dims.size(); d >= 1; d--)
+            for (int d = field.rank; d >= 1; d--)
             {
                 w << "    DO i" << d << " = LBOUND(" << src << "," << d << "), UBOUND(" << src
                   << "," << d << ")\n";
@@ -388,8 +366,8 @@ void gen_copy(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
 
             if (ddt.name_short.compare("MeshType") == 0)
             {
-                w << "      CALL MeshCopy( " << src << dimstr(field.dims.size()) << ", " << dst
-                  << dimstr(field.dims.size()) << ", CtrlCode, ErrStat2, ErrMsg2 )\n";
+                w << "      CALL MeshCopy( " << src << dimstr(field.rank) << ", " << dst
+                  << dimstr(field.rank) << ", CtrlCode, ErrStat2, ErrMsg2 )\n";
                 w << "         CALL SetErrStat(ErrStat2, ErrMsg2, "
                      "ErrStat, ErrMsg, RoutineName)\n";
                 w << "         IF (ErrStat>=AbortErrLev) RETURN\n";
@@ -400,13 +378,9 @@ void gen_copy(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
             }
             else
             {
-                auto name_short = ddt.name_short;
-                if (ddt.interface == nullptr)
-                {
-                    name_short = tolower(name_short);
-                }
-                w << "      CALL " << ddt.module->nickname << "_Copy" << name_short << "( " << src
-                  << dimstr(field.dims.size()) << ", " << dst << dimstr(field.dims.size())
+                w << "      CALL " << ddt.module->nickname << "_Copy"
+                  << (ddt.interface == nullptr ? tolower(ddt.name_short) : ddt.name_short) << "( "
+                  << src << dimstr(field.rank) << ", " << dst << dimstr(field.rank)
                   << ", CtrlCode, ErrStat2, ErrMsg2 )\n";
                 w << "         CALL SetErrStat(ErrStat2, ErrMsg2, "
                      "ErrStat, ErrMsg,RoutineName)\n";
@@ -414,9 +388,7 @@ void gen_copy(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
             }
 
             for (auto &d : field.dims)
-            {
                 w << "    ENDDO\n";
-            }
         }
         else
         {
@@ -433,9 +405,7 @@ void gen_copy(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
 
         // close IF (check on allocatable array)
         if (field.is_allocatable)
-        {
             w << "ENDIF\n";
-        }
     }
 
     w << " END SUBROUTINE " << mod.nickname << "_Copy" << ddt.name_short << "\n" << std::endl;
@@ -449,7 +419,7 @@ void gen_destroy(std::ostream &w, const Module &mod, const DataType::Derived &dd
 
     w << " SUBROUTINE " << routine_name << "( " << ddt_data
       << ", ErrStat, ErrMsg, DEALLOCATEpointers )\n";
-    w << "  TYPE(" << ddt.name_prefixed << "), INTENT(INOUT) :: " << ddt_data << "\n";
+    w << "  TYPE(" << ddt.type_fortran << "), INTENT(INOUT) :: " << ddt_data << "\n";
     w << "  INTEGER(IntKi),  INTENT(  OUT) :: ErrStat\n";
     w << "  CHARACTER(*),    INTENT(  OUT) :: ErrMsg\n";
     w << "  LOGICAL,OPTIONAL,INTENT(IN   ) :: DEALLOCATEpointers\n";
@@ -460,7 +430,8 @@ void gen_destroy(std::ostream &w, const Module &mod, const DataType::Derived &dd
     w << "  CHARACTER(ErrMsgLen)           :: ErrMsg2\n";
     w << "  CHARACTER(*),    PARAMETER :: RoutineName = '" << routine_name << "'\n\n";
     w << "  ErrStat = ErrID_None\n";
-    w << "  ErrMsg  = \"\"\n\n";
+    w << "  ErrMsg  = \"\"\n";
+    w << "\n";
     w << "  IF (PRESENT(DEALLOCATEpointers)) THEN\n";
     w << "     DEALLOCATEpointers_local = DEALLOCATEpointers\n";
     w << "  ELSE\n";
@@ -470,18 +441,11 @@ void gen_destroy(std::ostream &w, const Module &mod, const DataType::Derived &dd
 
     for (auto &field : ddt.fields)
     {
-        if (field.data_type == nullptr)
-        {
-            std::cerr << "Registry warning generating " << mod.nickname << "_Destroy"
-                      << ddt.name_short << ": " << field.name << " has no type.\n";
-            continue;
-        }
-
         // Combine data name and field name
         auto ddt_field = ddt_data + "%" + field.name;
 
         // If field is an array with deferred dimensions
-        if (field.dims.size() > 0 && field.dims[0].is_deferred)
+        if (field.rank > 0 && field.dims[0].is_deferred)
         {
             w << "IF (" << (field.is_pointer ? "ASSOCIATED" : "ALLOCATED") << "(" << ddt_field
               << ")) THEN\n";
@@ -490,13 +454,13 @@ void gen_destroy(std::ostream &w, const Module &mod, const DataType::Derived &dd
         // If field is a derived data type
         if (field.data_type->tag == DataType::Tag::Derived)
         {
-            for (int d = field.dims.size(); d >= 1; d--)
+            for (int d = field.rank; d >= 1; d--)
             {
                 w << "DO i" << d << " = LBOUND(" << ddt_field << "," << d << "), UBOUND("
                   << ddt_field << "," << d << ")\n";
             }
 
-            auto ddt_field_dims = ddt_field + dimstr(field.dims.size());
+            auto ddt_field_dims = ddt_field + dimstr(field.rank);
 
             if (field.data_type->derived.name.compare("MeshType") == 0)
             {
@@ -519,13 +483,13 @@ void gen_destroy(std::ostream &w, const Module &mod, const DataType::Derived &dd
                 w << "     CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName)\n";
             }
 
-            for (int d = field.dims.size(); d >= 1; d--)
+            for (int d = field.rank; d >= 1; d--)
             {
                 w << "ENDDO\n";
             }
         }
 
-        if (field.dims.size() > 0 && field.dims[0].is_deferred)
+        if (field.rank > 0 && field.dims[0].is_deferred)
         {
             if (field.is_pointer)
                 w << " IF (DEALLOCATEpointers_local) &\n";
@@ -560,7 +524,7 @@ void gen_pack(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
     w << "  REAL(ReKi),       ALLOCATABLE, INTENT(  OUT) :: ReKiBuf(:)\n";
     w << "  REAL(DbKi),       ALLOCATABLE, INTENT(  OUT) :: DbKiBuf(:)\n";
     w << "  INTEGER(IntKi),   ALLOCATABLE, INTENT(  OUT) :: IntKiBuf(:)\n";
-    w << "  TYPE(" << ddt.name_prefixed << "),  INTENT(IN) :: InData\n";
+    w << "  TYPE(" << ddt.type_fortran << "),  INTENT(IN) :: InData\n";
     w << "  INTEGER(IntKi),   INTENT(  OUT) :: ErrStat\n";
     w << "  CHARACTER(*),     INTENT(  OUT) :: ErrMsg\n";
     w << "  LOGICAL,OPTIONAL, INTENT(IN   ) :: SizeOnly\n";
@@ -598,34 +562,28 @@ void gen_pack(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
 
     for (auto &field : ddt.fields)
     {
-        if (field.data_type == nullptr)
-        {
-            std::cerr << "Registry warning generating " << routine_name << ": " << field.name
-                      << " has no type.\n";
-            return;
-        }
-
         auto assoc_alloc = field.is_pointer ? "ASSOCIATED" : "ALLOCATED";
-        auto field_dims = field.name + dimstr(field.dims.size());
+        auto field_dims = field.name + dimstr(field.rank);
 
-        if (field.dims.size() > 0 && field.dims[0].is_deferred)
+        if (field.rank > 0 && field.dims[0].is_deferred)
         {
             w << "  Int_BufSz   = Int_BufSz   + 1     ! " << field.name << " allocated yes/no\n";
             w << "  IF ( " << assoc_alloc << "(InData%" << field.name << ") ) THEN\n";
-            w << "    Int_BufSz   = Int_BufSz   + 2*" << field.dims.size() << "  ! " << field.name
+            w << "    Int_BufSz   = Int_BufSz   + 2*" << field.rank << "  ! " << field.name
               << " upper/lower bounds for each dimension\n";
         }
 
         //  call individual routines to pack data from subtypes:
         if (field.data_type->tag == DataType::Tag::Derived)
         {
+            auto &field_ddt = field.data_type->derived;
             if (frst)
             {
                 w << "   ! Allocate buffers for subtypes, if any (we'll get sizes from these) \n";
                 frst = false;
             }
 
-            for (int d = field.dims.size(); d >= 1; d--)
+            for (int d = field.rank; d >= 1; d--)
             {
                 w << "    DO i" << d << " = LBOUND(InData%" << field.name << "," << d
                   << "), UBOUND(InData%" << field.name << "," << d << ")\n";
@@ -633,13 +591,13 @@ void gen_pack(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
             w << "      Int_BufSz   = Int_BufSz + 3  ! " << field.name
               << ": size of buffers for each call to pack subtype\n";
 
-            if (field.data_type->derived.name.compare("MeshType") == 0)
+            if (field_ddt.name.compare("MeshType") == 0)
             {
                 w << "      CALL MeshPack( InData%" << field_dims
                   << ", Re_Buf, Db_Buf, Int_Buf, ErrStat2, ErrMsg2, .TRUE. ) ! " << field.name
                   << " \n";
             }
-            else if (field.data_type->derived.name.compare("DLL_Type") == 0)
+            else if (field_ddt.name.compare("DLL_Type") == 0)
             {
                 w << "      CALL DLLTypePack( InData%" << field_dims
                   << ", Re_Buf, Db_Buf, Int_Buf, ErrStat2, ErrMsg2, .TRUE. ) ! " << field.name
@@ -647,11 +605,10 @@ void gen_pack(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
             }
             else if (field.data_type->tag == DataType::Tag::Derived)
             {
-                auto name_short = field.data_type->derived.interface != nullptr
-                                      ? field.data_type->derived.name_short
-                                      : tolower(field.data_type->derived.name_short);
-                w << "      CALL " << field.data_type->derived.module->nickname << "_Pack"
-                  << name_short << "( Re_Buf, Db_Buf, Int_Buf, InData%" << field_dims
+                auto name_short = field_ddt.interface != nullptr ? field_ddt.name_short
+                                                                 : tolower(field_ddt.name_short);
+                w << "      CALL " << field_ddt.module->nickname << "_Pack" << name_short
+                  << "( Re_Buf, Db_Buf, Int_Buf, InData%" << field_dims
                   << ", ErrStat2, ErrMsg2, .TRUE. ) ! " << field.name << " \n";
             }
 
@@ -673,7 +630,7 @@ void gen_pack(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
             w << "         DEALLOCATE(Int_Buf)\n";
             w << "      END IF\n";
 
-            for (int d = field.dims.size(); d >= 1; d--)
+            for (int d = field.rank; d >= 1; d--)
             {
                 w << "    END DO\n";
             }
@@ -681,34 +638,30 @@ void gen_pack(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
         // intrinsic data types
         else
         {
-
             // do all dimensions of arrays (no need for loop over i%d)
 
-            std::string size = field.dims.size() > 0 ? "SIZE(InData%" + field.name + ")" : "1";
+            std::string size = field.rank > 0 ? "SIZE(InData%" + field.name + ")" : "1";
 
-            if (field.data_type->basic.type_fortran.compare("REAL(ReKi)") == 0 ||
-                field.data_type->basic.type_fortran.compare("REAL(SiKi)") == 0)
+            if (field.data_type->tag == DataType::Tag::Real)
             {
-                w << "      Re_BufSz   = Re_BufSz   + " << size << "  ! " << field.name << "\n";
+                if (field.data_type->basic.bit_size == 64)
+                    w << "      Db_BufSz   = Db_BufSz   + " << size << "  ! " << field.name << "\n";
+                else
+                    w << "      Re_BufSz   = Re_BufSz   + " << size << "  ! " << field.name << "\n";
             }
-            else if (field.data_type->basic.type_fortran.compare("REAL(DbKi)") == 0 ||
-                     field.data_type->basic.type_fortran.compare("REAL(R8Ki)") == 0)
-            {
-                w << "      Db_BufSz   = Db_BufSz   + " << size << "  ! " << field.name << "\n";
-            }
-            else if (field.data_type->basic.type_fortran.compare("INTEGER(IntKi)") == 0 ||
-                     field.data_type->basic.type_fortran.compare("LOGICAL") == 0)
+            else if (field.data_type->tag == DataType::Tag::Integer ||
+                     field.data_type->tag == DataType::Tag::Logical)
             {
                 w << "      Int_BufSz  = Int_BufSz  + " << size << "  ! " << field.name << "\n";
             }
-            else
+            else if (field.data_type->tag == DataType::Tag::Character)
             {
                 w << "      Int_BufSz  = Int_BufSz  + " << size << "*LEN(InData%" << field.name
                   << ")  ! " << field.name << "\n";
             }
         }
 
-        if (field.dims.size() > 0 && field.dims[0].is_deferred)
+        if (field.is_allocatable)
             w << "  END IF\n";
     }
 
@@ -754,9 +707,9 @@ void gen_pack(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
     for (auto &field : ddt.fields)
     {
         auto assoc_alloc = field.is_pointer ? "ASSOCIATED" : "ALLOCATED";
-        auto field_dims = field.name + dimstr(field.dims.size());
+        auto field_dims = field.name + dimstr(field.rank);
 
-        if (!field.dims.empty() && field.dims.front().is_deferred)
+        if (field.is_allocatable)
         {
             // store whether the data type is allocated and the bounds of each dimension
             w << "  IF ( .NOT. " << assoc_alloc << "(InData%" << field.name << ") ) THEN\n";
@@ -765,7 +718,7 @@ void gen_pack(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
             w << "  ELSE\n";
             w << "    IntKiBuf( Int_Xferred ) = 1\n"; // allocated
             w << "    Int_Xferred = Int_Xferred + 1\n";
-            for (int d = 1; d <= field.dims.size(); d++)
+            for (int d = 1; d <= field.rank; d++)
             {
                 w << "    IntKiBuf( Int_Xferred    ) = LBOUND(InData%" << field.name << "," << d
                   << ")\n";
@@ -790,7 +743,7 @@ void gen_pack(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
                 frst = false;
             }
 
-            for (int d = field.dims.size(); d >= 1; d--)
+            for (int d = field.rank; d >= 1; d--)
             {
                 w << "    DO i" << d << " = LBOUND(InData%" << field.name << "," << d
                   << "), UBOUND(InData%" << field.name << "," << d << ")\n";
@@ -848,7 +801,7 @@ void gen_pack(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
             w << "        IntKiBuf( Int_Xferred ) = 0; Int_Xferred = Int_Xferred + 1\n";
             w << "      ENDIF\n";
 
-            for (int d = field.dims.size(); d >= 1; d--)
+            for (int d = field.rank; d >= 1; d--)
             {
                 w << "    END DO\n";
             }
@@ -859,37 +812,38 @@ void gen_pack(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
             // do all dimensions of arrays (no need for loop over i%d)
             auto indent = "  " + mainIndent;
 
-            for (int d = field.dims.size(); d >= 1; d--)
+            for (int d = field.rank; d >= 1; d--)
             {
                 w << indent << "  DO i" << d << " = LBOUND(InData%" << field.name << "," << d
                   << "), UBOUND(InData%" << field.name << "," << d << ")\n";
                 indent += "  ";
             }
 
-            if (field.data_type->basic.type_fortran.compare("REAL(ReKi)") == 0 ||
-                field.data_type->basic.type_fortran.compare("REAL(SiKi)") == 0)
+            if (field.data_type->tag == DataType::Tag::Real)
             {
-                w << indent << "  ReKiBuf(Re_Xferred) = InData%" << field_dims << "\n";
-                w << indent << "  Re_Xferred = Re_Xferred + 1\n";
+                if (field.data_type->basic.bit_size == 64)
+                {
+                    w << indent << "  DbKiBuf(Db_Xferred) = InData%" << field_dims << "\n";
+                    w << indent << "  Db_Xferred = Db_Xferred + 1\n";
+                }
+                else
+                {
+                    w << indent << "  ReKiBuf(Re_Xferred) = InData%" << field_dims << "\n";
+                    w << indent << "  Re_Xferred = Re_Xferred + 1\n";
+                }
             }
-            else if (field.data_type->basic.type_fortran.compare("REAL(DbKi)") == 0 ||
-                     field.data_type->basic.type_fortran.compare("REAL(R8Ki)") == 0)
-            {
-                w << indent << "  DbKiBuf(Db_Xferred) = InData%" << field_dims << "\n";
-                w << indent << "  Db_Xferred = Db_Xferred + 1\n";
-            }
-            else if (field.data_type->basic.type_fortran.compare("INTEGER(IntKi)") == 0)
+            else if (field.data_type->tag == DataType::Tag::Integer)
             {
                 w << indent << "  IntKiBuf(Int_Xferred) = InData%" << field_dims << "\n";
                 w << indent << "  Int_Xferred = Int_Xferred + 1\n";
             }
-            else if (field.data_type->basic.type_fortran.compare("LOGICAL") == 0)
+            else if (field.data_type->tag == DataType::Tag::Logical)
             {
                 w << indent << "  IntKiBuf(Int_Xferred) = TRANSFER(InData%" << field_dims
                   << ", IntKiBuf(1))\n";
                 w << indent << "  Int_Xferred = Int_Xferred + 1\n";
             }
-            else
+            else if (field.data_type->tag == DataType::Tag::Character)
             {
                 w << indent << "  DO I = 1, LEN(InData%" << field.name << ")\n";
                 w << indent << "    IntKiBuf(Int_Xferred) = ICHAR(InData%" << field_dims
@@ -898,22 +852,17 @@ void gen_pack(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
                 w << indent << "  END DO ! I\n";
             }
 
-            for (int d = field.dims.size(); d >= 1; d--)
+            for (int d = field.rank; d >= 1; d--)
             {
-                indent = "  ";
-                indent += mainIndent;
+                indent = "  " + mainIndent;
                 for (int i = 1; i < d; i++)
-                {
                     indent += "  ";
-                }
                 w << indent << "  END DO\n";
             }
         }
 
-        if (!field.dims.empty() && field.dims.front().is_deferred)
-        {
+        if (field.is_allocatable)
             w << "  END IF\n";
-        }
     }
 
     w << " END SUBROUTINE " << routine_name << "\n\n";
@@ -928,7 +877,7 @@ void gen_unpack(std::ostream &w, const Module &mod, const DataType::Derived &ddt
     w << "  REAL(ReKi),      ALLOCATABLE, INTENT(IN   ) :: ReKiBuf(:)\n";
     w << "  REAL(DbKi),      ALLOCATABLE, INTENT(IN   ) :: DbKiBuf(:)\n";
     w << "  INTEGER(IntKi),  ALLOCATABLE, INTENT(IN   ) :: IntKiBuf(:)\n";
-    w << "  TYPE(" << ddt.name_prefixed << "), INTENT(INOUT) :: OutData\n";
+    w << "  TYPE(" << ddt.type_fortran << "), INTENT(INOUT) :: OutData\n";
     w << "  INTEGER(IntKi),  INTENT(  OUT) :: ErrStat\n";
     w << "  CHARACTER(*),    INTENT(  OUT) :: ErrMsg\n";
     w << "    ! Local variables\n";
@@ -982,7 +931,7 @@ void gen_unpack(std::ostream &w, const Module &mod, const DataType::Derived &ddt
             w << "  ELSE\n";
             w << "    Int_Xferred = Int_Xferred + 1\n";
 
-            for (int d = 1; d <= field.dims.size(); d++)
+            for (int d = 1; d <= field.rank; d++)
             {
                 w << "    i" << d << "_l = IntKiBuf( Int_Xferred    )\n";
                 w << "    i" << d << "_u = IntKiBuf( Int_Xferred + 1)\n";
@@ -1005,7 +954,7 @@ void gen_unpack(std::ostream &w, const Module &mod, const DataType::Derived &ddt
                 w << "    " << var_c << "_Len = SIZE(" << var << ")\n";
                 w << "    IF (" << var_c << "_Len > 0) &\n";
                 w << "       " << var_c << " = C_LOC( " << var << "(";
-                for (int d = 1; d <= field.dims.size(); d++)
+                for (int d = 1; d <= field.rank; d++)
                     w << (d > 1 ? "," : "") << " i" << d << "_l";
                 w << " ) )\n";
             }
@@ -1013,7 +962,7 @@ void gen_unpack(std::ostream &w, const Module &mod, const DataType::Derived &ddt
         }
         else
         {
-            for (int d = 1; d <= field.dims.size(); d++)
+            for (int d = 1; d <= field.rank; d++)
             {
                 w << "    i" << d << "_l = LBOUND(" << var << "," << d << ")\n";
                 w << "    i" << d << "_u = UBOUND(" << var << "," << d << ")\n";
@@ -1023,7 +972,7 @@ void gen_unpack(std::ostream &w, const Module &mod, const DataType::Derived &ddt
         }
 
         //  call individual routines to pack data from subtypes:
-        if ((field.data_type != nullptr) && (field.data_type->tag == DataType::Tag::Derived))
+        if (field.data_type->tag == DataType::Tag::Derived)
         {
             for (int d = field.rank; d >= 1; d--)
             {
@@ -1032,6 +981,7 @@ void gen_unpack(std::ostream &w, const Module &mod, const DataType::Derived &ddt
             }
 
             // initialize buffers to send to subtype-unpack routines:
+
             // reals:
             w << "      Buf_size=IntKiBuf( Int_Xferred )\n";
             w << "      Int_Xferred = Int_Xferred + 1\n";
@@ -1106,17 +1056,17 @@ void gen_unpack(std::ostream &w, const Module &mod, const DataType::Derived &ddt
             {
                 w << indent << "  DO i" << d << " = LBOUND(" << var << "," << d
                   << "), UBOUND(OutData%" << field.name << "," << d << ")\n";
-                indent += "  "; // create an indent
+                indent += "  ";
             }
 
-            if (field.data_type->basic.type_fortran.compare("REAL(ReKi)") == 0 ||
-                field.data_type->basic.type_fortran.compare("REAL(SiKi)") == 0)
+            if (field.data_type->tag == DataType::Tag::Real &&
+                field.data_type->basic.bit_size <= 32)
             {
                 if (gen_c_code && field.is_pointer)
                 {
                     w << indent << "  " << var_dims << " = REAL(ReKiBuf(Re_Xferred), C_FLOAT)\n";
                 }
-                else if (field.data_type->basic.type_fortran.compare("REAL(SiKi)") == 0)
+                else if (field.data_type->basic.bit_size == 32)
                 {
                     w << indent << "  " << var_dims << " = REAL(ReKiBuf(Re_Xferred), SiKi)\n";
                 }
@@ -1126,8 +1076,8 @@ void gen_unpack(std::ostream &w, const Module &mod, const DataType::Derived &ddt
                 }
                 w << indent << "  Re_Xferred = Re_Xferred + 1\n";
             }
-            else if (field.data_type->basic.type_fortran.compare("REAL(DbKi)") == 0 ||
-                     field.data_type->basic.type_fortran.compare("REAL(R8Ki)") == 0)
+            else if (field.data_type->tag == DataType::Tag::Real &&
+                     field.data_type->basic.bit_size == 64)
             {
                 if (gen_c_code && field.is_pointer)
                 {
@@ -1143,19 +1093,18 @@ void gen_unpack(std::ostream &w, const Module &mod, const DataType::Derived &ddt
                 }
                 w << indent << "  Db_Xferred = Db_Xferred + 1\n";
             }
-            else if (field.data_type->basic.type_fortran.compare("INTEGER(IntKi)") == 0)
+            else if (field.data_type->tag == DataType::Tag::Integer)
             {
                 w << indent << "  " << var_dims << " = IntKiBuf(Int_Xferred)\n";
                 w << indent << "  Int_Xferred = Int_Xferred + 1\n";
             }
-            else if (field.data_type->basic.type_fortran.compare("LOGICAL") == 0)
+            else if (field.data_type->tag == DataType::Tag::Logical)
             {
                 w << indent << "  " << var_dims << " = TRANSFER(IntKiBuf(Int_Xferred), OutData%"
                   << field_dims << ")\n";
                 w << indent << "  Int_Xferred = Int_Xferred + 1\n";
             }
-
-            else /*if (field.data_type->simple.maps_to_fortran("CHARACTER")) */
+            else if (field.data_type->tag == DataType::Tag::Character)
             {
 
                 w << indent << "  DO I = 1, LEN(" << var << ")\n";
@@ -1164,72 +1113,63 @@ void gen_unpack(std::ostream &w, const Module &mod, const DataType::Derived &ddt
                 w << indent << "  END DO ! I\n";
             }
 
-            for (int d = field.dims.size(); d >= 1; d--)
+            for (int d = field.rank; d >= 1; d--)
             {
                 indent = "  " + mainIndent;
                 for (int i = 1; i < d; i++)
-                {
                     indent += "  ";
-                }
                 w << indent << "  END DO\n";
             }
 
             // need to move scalars and strings to the %c_obj% type, too!
             // compare with copy routine
-
-            if (gen_c_code && !field.is_pointer && field.dims.size() == 0)
+            if (gen_c_code && !field.is_pointer && field.rank == 0)
             {
                 std::string var_c = "OutData%C_obj%" + field.name;
-                if (field.data_type->tag == DataType::Tag::Real ||
-                    field.data_type->tag == DataType::Tag::Integer ||
-                    field.data_type->tag == DataType::Tag::Logical)
+                switch (field.data_type->tag)
                 {
+                case DataType::Tag::Real:
+                case DataType::Tag::Integer:
+                case DataType::Tag::Logical:
                     w << "      " << var_c << " = " << var << "\n";
-                }
-                else
-                { // characters need to be copied differently
+                    break;
+                case DataType::Tag::Character:
                     w << "      " << var_c << " = TRANSFER(" << var << ", " << var_c << " )\n";
+                    break;
+                case DataType::Tag::Derived:
+                    break;
                 }
             }
         }
 
         if (field.is_allocatable)
-        {
             w << "  END IF\n";
-        }
     }
 
     w << " END SUBROUTINE " << routine_name << "\n\n";
-    return; //(0) ;
 }
 
-void gen_extint_order(std::ostream &w, const Module &mod, std::string type_name, std::string uy,
-                      const int order, const Field &field, const std::string &deref,
-                      int recurse_level)
+void gen_extint_order(std::ostream &w, const Module &mod, std::string uy, const int order,
+                      const Field &field, const std::string &deref, int recurse_level)
 {
     std::string indent, tmp;
 
     if (recurse_level > MAXRECURSE)
     {
         std::cerr << "REGISTRY ERROR: too many levels of array subtypes\n";
-        exit(9);
-    }
-
-    if (field.data_type == nullptr)
-    {
-        return;
+        exit(EXIT_FAILURE);
     }
 
     auto assoc_alloc = field.is_pointer ? "ASSOCIATED" : "ALLOCATED";
 
-    std::string dims = dimstr(field.dims.size());
+    std::string dims = dimstr(field.rank);
     std::string v1 = uy + "1" + deref + "%" + field.name;
     std::string v2 = uy + "2" + deref + "%" + field.name;
     std::string v3 = uy + "3" + deref + "%" + field.name;
     std::string vout = uy + "_out" + deref + "%" + field.name;
 
     // check if this is an allocatable array:
-    if (field.dims.size() > 0 && field.is_allocatable)
+    if (field.rank > 0 && field.is_allocatable)
     {
         w << "IF (" << assoc_alloc << "(" << vout << ") .AND. " << assoc_alloc << "(" << v1
           << ")) THEN\n";
@@ -1246,19 +1186,19 @@ void gen_extint_order(std::ostream &w, const Module &mod, std::string type_name,
             {
                 std::string field_var = deref + "%" + field.name;
 
-                for (int j = field.dims.size(); j > 0; j--)
+                for (int j = field.rank; j > 0; j--)
                 {
                     w << "  DO i" << recurse_level << j << " = LBOUND(" << uy << "_out" << field_var
                       << "," << j << "),UBOUND(" << uy << "_out" << field_var << "," << j << ")\n";
                 }
 
-                if (field.dims.size() > 0)
+                if (field.rank > 0)
                 {
                     field_var += "(";
-                    for (int j = 1; j <= field.dims.size(); j++)
+                    for (int j = 1; j <= field.rank; j++)
                     {
                         field_var += "i" + std::to_string(recurse_level) + std::to_string(j);
-                        if (j < field.dims.size())
+                        if (j < field.rank)
                         {
                             field_var += ",";
                         }
@@ -1266,9 +1206,8 @@ void gen_extint_order(std::ostream &w, const Module &mod, std::string type_name,
                     field_var += ")";
                 }
 
-                gen_extint_order(w, mod, type_name, uy, order, sub_field, field_var,
-                                 recurse_level + 1);
-                for (int j = field.dims.size(); j > 0; j--)
+                gen_extint_order(w, mod, uy, order, sub_field, field_var, recurse_level + 1);
+                for (int j = field.rank; j > 0; j--)
                 {
                     w << "  ENDDO\n";
                 }
@@ -1276,7 +1215,7 @@ void gen_extint_order(std::ostream &w, const Module &mod, std::string type_name,
         }
         else
         {
-            for (int j = field.dims.size(); j > 0; j--)
+            for (int j = field.rank; j > 0; j--)
             {
                 w << "  DO i" << j << " = LBOUND(" << vout << "," << j << "),UBOUND(" << vout << ","
                   << j << ")\n";
@@ -1346,7 +1285,7 @@ void gen_extint_order(std::ostream &w, const Module &mod, std::string type_name,
             indent = "";
         }
 
-        for (int j = field.dims.size(); j > 0; j--)
+        for (int j = field.rank; j > 0; j--)
         {
             w << indent << "  DO i" << j << " = LBOUND(" << vout << "," << j << "),UBOUND(" << vout
               << "," << j << ")\n";
@@ -1382,79 +1321,74 @@ void gen_extint_order(std::ostream &w, const Module &mod, std::string type_name,
                 w << indent << "  " << vout + dims << " = " << v1 + dims << " + b  + c * t_out\n";
             }
         }
-        for (int j = field.dims.size(); j >= 1; j--)
+        for (int j = field.rank; j >= 1; j--)
         {
             indent = "";
             for (int i = 1; i < j; i++)
-            {
                 indent += "  ";
-            }
             w << indent << "  END DO\n";
         }
     }
+
     // check if this is an allocatable array:
-    if (field.dims.size() > 0 && field.dims.front().is_deferred)
-    {
+    if (field.is_allocatable)
         w << "END IF ! check if allocated\n";
-    }
 }
 
 void calc_extint_order(std::ostream &w, const Module &mod, const Field &field, int recurse_level,
-                       int &max_ndims, int &max_nrecurs, int &max_alloc_ndims)
+                       int &max_rank, int &max_nrecurs, int &max_alloc_ndims)
 {
     // bjj: make sure this is consistent with logic of gen_extint_order
 
-    // If recursion level is greater than limit, return error
+    // If recursion level is greater than limit, exit with error
     if (recurse_level > MAXRECURSE)
     {
         std::cerr << "REGISTRY ERROR: too many levels of array subtypes\n";
-        exit(9);
-    }
-
-    // If field type is null, return
-    if (field.data_type == nullptr)
-    {
-        return;
+        exit(EXIT_FAILURE);
     }
 
     // Update max dims based on field rank
-    max_ndims = std::max(max_ndims, field.rank);
+    max_rank = std::max(max_rank, field.rank);
 
-    // If field is a derived data type
-    if (field.data_type->tag == DataType::Tag::Derived)
+    // Switch based on field data type
+    switch (field.data_type->tag)
     {
+    case DataType::Tag::Derived:
+
         // If this derived type belongs to this module
         if (field.data_type->derived.module != nullptr &&
             field.data_type->derived.module->name.compare(mod.name) == 0)
         {
+            // Update recursion level
             max_nrecurs = std::max(max_nrecurs, recurse_level);
 
             // Loop through fields and calculate order
-            for (auto &sub_field : field.data_type->derived.fields)
-            {
-                calc_extint_order(w, mod, sub_field, recurse_level + 1, max_ndims, max_nrecurs,
+            for (const auto &sub_field : field.data_type->derived.fields)
+                calc_extint_order(w, mod, sub_field, recurse_level + 1, max_rank, max_nrecurs,
                                   max_alloc_ndims);
-            }
         }
-    }
-    // If field is a real type
-    else if (field.data_type->tag == DataType::Tag::Real)
-    {
+        break;
+
+    case DataType::Tag::Real:
         max_alloc_ndims = std::max(max_alloc_ndims, field.rank);
+        break;
+
+    default:
+        // TODO: handle other field types
+        break;
     }
 }
 
-void gen_ExtrapInterp1(std::ostream &w, const Module &mod, std::string &type_name,
-                       std::string &type_name_long, std::string &type_kind, std::string &uy,
-                       std::string &mod_prefix, const int max_ndims, const int max_nrecurs,
-                       const int max_alloc_ndims, const DataType::Derived &ddt)
+void gen_ExtrapInterp1(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
+                       std::string &type_kind, std::string &uy, std::string &mod_prefix,
+                       const int max_rank, const int max_nrecurs, const int max_alloc_ndims)
 {
     w << "\n";
-    w << " SUBROUTINE " << mod.nickname << "_" << type_name << "_ExtrapInterp1(" << uy << "1, "
+    w << " SUBROUTINE " << mod.nickname << "_" << ddt.name_short << "_ExtrapInterp1(" << uy << "1, "
       << uy << "2, tin, " << uy << "_out, tin_out, ErrStat, ErrMsg )\n";
     w << "!\n";
-    w << "! This subroutine calculates a extrapolated (or interpolated) " << type_name << " " << uy
-      << "_out at time t_out, from previous/future time\n";
+    w << "! This subroutine calculates a extrapolated (or interpolated) " << ddt.name_short << " "
+      << uy << "_out at time t_out, from previous/future time\n";
     w << "! values of " << uy
       << " (which has values associated with times in t).  Order of the interpolation is 1.\n";
     w << "!\n";
@@ -1466,35 +1400,33 @@ void gen_ExtrapInterp1(std::ostream &w, const Module &mod, std::string &type_nam
     w << "!" << std::string(130, '.') << "\n";
     w << "\n";
 
-    w << " TYPE(" << mod_prefix << type_name_long << "), INTENT("
-      << (ddt.contains_mesh == 1 ? "INOUT" : "IN") << ")  :: " << uy << "1    ! " << type_name
-      << " at t1 > t2\n";
-    w << " TYPE(" << mod_prefix << type_name_long << "), INTENT("
-      << (ddt.contains_mesh == 1 ? "INOUT" : "IN") << ")  :: " << uy << "2    ! " << type_name
-      << " at t2 \n";
+    w << " TYPE(" << ddt.type_fortran << "), INTENT(" << (ddt.contains_mesh == 1 ? "INOUT" : "IN")
+      << ")  :: " << uy << "1    ! " << ddt.name_short << " at t1 > t2\n";
+    w << " TYPE(" << ddt.type_fortran << "), INTENT(" << (ddt.contains_mesh == 1 ? "INOUT" : "IN")
+      << ")  :: " << uy << "2    ! " << ddt.name_short << " at t2 \n";
     w << " REAL(" << type_kind
-      << "),         INTENT(IN   )          :: tin(2)   ! Times associated with the " << type_name
-      << "s\n";
-    w << " TYPE(" << mod_prefix << type_name_long << "), INTENT(INOUT)  :: " << uy << "_out ! "
-      << type_name << " at tin_out\n";
+      << "),         INTENT(IN   )          :: tin(2)   ! Times associated with the "
+      << ddt.name_short << "s\n";
+    w << " TYPE(" << ddt.type_fortran << "), INTENT(INOUT)  :: " << uy << "_out ! "
+      << ddt.name_short << " at tin_out\n";
     w << " REAL(" << type_kind
       << "),         INTENT(IN   )          :: tin_out  ! time to be extrap/interp'd to\n";
     w << " INTEGER(IntKi),     INTENT(  OUT)          :: ErrStat  ! Error status of the operation\n";
     w << " CHARACTER(*),       INTENT(  OUT)          :: ErrMsg   ! Error message if ErrStat /= ErrID_None\n";
     w << "   ! local variables\n";
     w << " REAL(" << type_kind
-      << ")                                 :: t(2)     ! Times associated with the " << type_name
-      << "s\n";
+      << ")                                 :: t(2)     ! Times associated with the "
+      << ddt.name_short << "s\n";
     w << " REAL(" << type_kind
       << ")                                 :: t_out    ! Time to which to be extrap/interpd\n";
     w << " CHARACTER(*),                    PARAMETER :: RoutineName = '" << mod.nickname << "_"
-      << type_name << "_ExtrapInterp1'\n";
+      << ddt.name_short << "_ExtrapInterp1'\n";
 
     w << " REAL(DbKi)                                 :: b        ! temporary for extrapolation/interpolation\n";
     w << " REAL(DbKi)                                 :: ScaleFactor ! temporary for extrapolation/interpolation\n";
     w << " INTEGER(IntKi)                             :: ErrStat2 ! local errors\n";
     w << " CHARACTER(ErrMsgLen)                       :: ErrMsg2  ! local errors\n";
-    for (int j = 1; j <= max_ndims; j++)
+    for (int j = 1; j <= max_rank; j++)
     {
         for (int i = 0; i <= max_nrecurs; i++)
         {
@@ -1502,7 +1434,7 @@ void gen_ExtrapInterp1(std::ostream &w, const Module &mod, std::string &type_nam
               << " level " << i << " counter variable for arrays of ddts\n";
         }
     }
-    for (int j = 1; j <= max_ndims; j++)
+    for (int j = 1; j <= max_rank; j++)
     {
         w << " INTEGER                                    :: i" << j << "    ! dim" << j
           << " counter variable for arrays\n";
@@ -1524,25 +1456,22 @@ void gen_ExtrapInterp1(std::ostream &w, const Module &mod, std::string &type_nam
     w << "   ScaleFactor = t_out / t(2)" << std::endl;
 
     for (const auto &field : ddt.fields)
-    {
-        gen_extint_order(w, mod, type_name, uy, 1, field, "", 0);
-    }
+        gen_extint_order(w, mod, uy, 1, field, "", 0);
 
-    w << " END SUBROUTINE " << mod.nickname << "_" << type_name << "_ExtrapInterp1\n";
+    w << " END SUBROUTINE " << mod.nickname << "_" << ddt.name_short << "_ExtrapInterp1\n";
     w << "\n";
 }
 
-void gen_ExtrapInterp2(std::ostream &w, const Module &mod, std::string &type_name,
-                       std::string &type_name_long, std::string &type_kind, std::string &uy,
-                       std::string &modPrefix, const int max_ndims, const int max_nrecurs,
-                       const int max_alloc_ndims, const DataType::Derived &ddt)
+void gen_ExtrapInterp2(std::ostream &w, const Module &mod, const DataType::Derived &ddt,
+                       std::string &type_kind, std::string &uy, std::string &modPrefix,
+                       const int max_rank, const int max_nrecurs, const int max_alloc_ndims)
 {
     w << "\n";
-    w << " SUBROUTINE " << mod.nickname << "_" << type_name << "_ExtrapInterp2(" << uy << "1, "
+    w << " SUBROUTINE " << mod.nickname << "_" << ddt.name_short << "_ExtrapInterp2(" << uy << "1, "
       << uy << "2, " << uy << "3, tin, " << uy << "_out, tin_out, ErrStat, ErrMsg )\n";
     w << "!\n";
-    w << "! This subroutine calculates a extrapolated (or interpolated) " << type_name << " " << uy
-      << "_out at time t_out, from previous/future time\n";
+    w << "! This subroutine calculates a extrapolated (or interpolated) " << ddt.name_short << " "
+      << uy << "_out at time t_out, from previous/future time\n";
     w << "! values of " << uy
       << " (which has values associated with times in t).  Order of the interpolation is 2.\n";
     w << "!\n";
@@ -1556,20 +1485,17 @@ void gen_ExtrapInterp2(std::ostream &w, const Module &mod, std::string &type_nam
     w << "!" << std::string(130, '.') << "\n";
     w << "\n";
 
-    w << " TYPE(" << modPrefix << type_name_long << "), INTENT("
-      << (ddt.contains_mesh == 1 ? "INOUT" : "IN") << ")  :: " << uy << "1      ! " << type_name
-      << " at t1 > t2 > t3\n";
-    w << " TYPE(" << modPrefix << type_name_long << "), INTENT("
-      << (ddt.contains_mesh == 1 ? "INOUT" : "IN") << ")  :: " << uy << "2      ! " << type_name
-      << " at t2 > t3\n";
-    w << " TYPE(" << modPrefix << type_name_long << "), INTENT("
-      << (ddt.contains_mesh == 1 ? "INOUT" : "IN") << ")  :: " << uy << "3      ! " << type_name
-      << " at t3\n";
+    w << " TYPE(" << ddt.type_fortran << "), INTENT(" << (ddt.contains_mesh == 1 ? "INOUT" : "IN")
+      << ")  :: " << uy << "1      ! " << ddt.name_short << " at t1 > t2 > t3\n";
+    w << " TYPE(" << ddt.type_fortran << "), INTENT(" << (ddt.contains_mesh == 1 ? "INOUT" : "IN")
+      << ")  :: " << uy << "2      ! " << ddt.name_short << " at t2 > t3\n";
+    w << " TYPE(" << ddt.type_fortran << "), INTENT(" << (ddt.contains_mesh == 1 ? "INOUT" : "IN")
+      << ")  :: " << uy << "3      ! " << ddt.name_short << " at t3\n";
     w << " REAL(" << type_kind
-      << "),                 INTENT(IN   )  :: tin(3)    ! Times associated with the " << type_name
-      << "s\n";
-    w << " TYPE(" << modPrefix << type_name_long << "), INTENT(INOUT)  :: " << uy << "_out     ! "
-      << type_name << " at tin_out\n";
+      << "),                 INTENT(IN   )  :: tin(3)    ! Times associated with the "
+      << ddt.name_short << "s\n";
+    w << " TYPE(" << ddt.type_fortran << "), INTENT(INOUT)  :: " << uy << "_out     ! "
+      << ddt.name_short << " at tin_out\n";
     w << " REAL(" << type_kind
       << "),                 INTENT(IN   )  :: tin_out   ! time to be extrap/interp'd to\n";
 
@@ -1577,8 +1503,8 @@ void gen_ExtrapInterp2(std::ostream &w, const Module &mod, std::string &type_nam
     w << " CHARACTER(*),               INTENT(  OUT)  :: ErrMsg    ! Error message if ErrStat /= ErrID_None\n";
     w << "   ! local variables\n";
     w << " REAL(" << type_kind
-      << ")                                 :: t(3)      ! Times associated with the " << type_name
-      << "s\n";
+      << ")                                 :: t(3)      ! Times associated with the "
+      << ddt.name_short << "s\n";
     w << " REAL(" << type_kind
       << ")                                 :: t_out     ! Time to which to be extrap/interpd\n";
     w << " INTEGER(IntKi)                             :: order     ! order of polynomial fit (max 2)\n";
@@ -1589,8 +1515,8 @@ void gen_ExtrapInterp2(std::ostream &w, const Module &mod, std::string &type_nam
     w << " INTEGER(IntKi)                             :: ErrStat2 ! local errors\n";
     w << " CHARACTER(ErrMsgLen)                       :: ErrMsg2  ! local errors\n";
     w << " CHARACTER(*),            PARAMETER         :: RoutineName = '" << mod.nickname << "_"
-      << type_name << "_ExtrapInterp2'\n";
-    for (int j = 1; j <= max_ndims; j++)
+      << ddt.name_short << "_ExtrapInterp2'\n";
+    for (int j = 1; j <= max_rank; j++)
     {
         for (int i = 0; i <= max_nrecurs; i++)
         {
@@ -1598,7 +1524,7 @@ void gen_ExtrapInterp2(std::ostream &w, const Module &mod, std::string &type_nam
               << " level " << i << " counter variable for arrays of ddts\n";
         }
     }
-    for (int j = 1; j <= max_ndims; j++)
+    for (int j = 1; j <= max_rank; j++)
     {
         w << " INTEGER                                    :: i" << j << "    ! dim" << j
           << " counter variable for arrays\n";
@@ -1628,39 +1554,34 @@ void gen_ExtrapInterp2(std::ostream &w, const Module &mod, std::string &type_nam
     // recursive
     for (const auto &field : ddt.fields)
     {
-        gen_extint_order(w, mod, type_name, uy, 2, field, "", 0);
+        gen_extint_order(w, mod, uy, 2, field, "", 0);
     }
 
-    w << " END SUBROUTINE " << mod.nickname << "_" << type_name << "_ExtrapInterp2\n";
+    w << " END SUBROUTINE " << mod.nickname << "_" << ddt.name_short << "_ExtrapInterp2\n";
     w << "\n";
 }
 
-void gen_ExtrapInterp(std::ostream &w, const Module &mod, std::string type_name,
-                      std::string type_name_long, std::string type_kind, const bool useModPrefix)
+void gen_ExtrapInterp(std::ostream &w, const Module &mod, std::string type_name_long,
+                      std::string type_kind, const bool useModPrefix)
 {
-    std::string uy = tolower(type_name).compare("output") == 0 ? "y" : "u";
+    // Get derived data type from module
     std::string modPrefix = useModPrefix ? mod.nickname + "_" : "";
-
     auto iter = mod.data_types.find(modPrefix + type_name_long);
     if (iter == mod.data_types.end())
-    {
         return;
-    }
-
     const auto &dt = iter->second;
     if (dt == nullptr)
-    {
         return;
-    }
-
     const auto &ddt = dt->derived;
 
+    std::string uy = tolower(ddt.name_short).compare("output") == 0 ? "y" : "u";
+
     w << "\n";
-    w << " SUBROUTINE " << mod.nickname << "_" << type_name << "_ExtrapInterp(" << uy << ", t, "
-      << uy << "_out, t_out, ErrStat, ErrMsg )\n";
+    w << " SUBROUTINE " << mod.nickname << "_" << ddt.name_short << "_ExtrapInterp(" << uy
+      << ", t, " << uy << "_out, t_out, ErrStat, ErrMsg )\n";
     w << "!\n";
-    w << "! This subroutine calculates a extrapolated (or interpolated) " << type_name << " " << uy
-      << "_out at time t_out, from previous/future time\n";
+    w << "! This subroutine calculates a extrapolated (or interpolated) " << ddt.name_short << " "
+      << uy << "_out at time t_out, from previous/future time\n";
     w << "! values of " << uy
       << " (which has values associated with times in t).  Order of the interpolation is given by the size of "
       << uy << "\n";
@@ -1677,18 +1598,15 @@ void gen_ExtrapInterp(std::ostream &w, const Module &mod, std::string type_name,
     w << "!\n";
     w << "!" << std::string(130, '.') << "\n";
     w << "\n";
-
-    w << " TYPE(" << modPrefix << type_name_long << "), INTENT("
-      << (ddt.contains_mesh == 1 ? "INOUT" : "IN") << ")  :: " << uy << "(:) ! " << type_name
-      << " at t1 > t2 > t3\n";
+    w << " TYPE(" << ddt.type_fortran << "), INTENT(" << (ddt.contains_mesh == 1 ? "INOUT" : "IN")
+      << ")  :: " << uy << "(:) ! " << ddt.name_short << " at t1 > t2 > t3\n";
     w << " REAL(" << type_kind
       << "),                 INTENT(IN   )  :: t(:)           ! Times associated with the "
-      << type_name << "s\n";
-    // jm Modified from INTENT(  OUT) to INTENT(INOUT) to prevent ALLOCATABLE array arguments in the
-    // DDT jm from being maliciously deallocated through the call.See Sec. 5.1.2.7 of bonehead
-    // Fortran 2003 standard
-    w << " TYPE(" << modPrefix << type_name_long << "), INTENT(INOUT)  :: " << uy << "_out ! "
-      << type_name << " at tin_out\n";
+      << ddt.name_short << "s\n";
+    // Intent must be (INOUT) to prevent ALLOCATABLE array arguments in the DDT from
+    // being deallocated in this call. See Sec. 5.1.2.7 of Fortran 2003 standard
+    w << " TYPE(" << ddt.type_fortran << "), INTENT(INOUT)  :: " << uy << "_out ! "
+      << ddt.name_short << " at tin_out\n";
     w << " REAL(" << type_kind
       << "),                 INTENT(IN   )  :: t_out           ! time to be extrap/interp'd to\n";
     w << " INTEGER(IntKi),             INTENT(  OUT)  :: ErrStat         ! Error status of the operation\n";
@@ -1698,7 +1616,7 @@ void gen_ExtrapInterp(std::ostream &w, const Module &mod, std::string type_name,
     w << " INTEGER(IntKi)                             :: ErrStat2        ! local errors\n";
     w << " CHARACTER(ErrMsgLen)                       :: ErrMsg2         ! local errors\n";
     w << " CHARACTER(*),    PARAMETER                 :: RoutineName = '" << mod.nickname << "_"
-      << type_name << "_ExtrapInterp'\n";
+      << ddt.name_short << "_ExtrapInterp'\n";
     w << "    ! Initialize ErrStat\n";
     w << " ErrStat = ErrID_None\n";
     w << " ErrMsg  = \"\"\n";
@@ -1707,48 +1625,45 @@ void gen_ExtrapInterp(std::ostream &w, const Module &mod, std::string type_name,
       << ")',ErrStat,ErrMsg,RoutineName)\n";
     w << "    RETURN\n";
     w << " endif\n";
-
     w << " order = SIZE(" << uy << ") - 1\n";
-
     w << " IF ( order .eq. 0 ) THEN\n";
-    w << "   CALL " << mod.nickname << "_Copy" << type_name << "(" << uy << "(1), " << uy
+    w << "   CALL " << mod.nickname << "_Copy" << ddt.name_short << "(" << uy << "(1), " << uy
       << "_out, MESH_UPDATECOPY, ErrStat2, ErrMsg2 )\n";
     w << "     CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg,RoutineName)\n";
     w << " ELSE IF ( order .eq. 1 ) THEN\n";
-    w << "   CALL " << mod.nickname << "_" << type_name << "_ExtrapInterp1(" << uy << "(1), " << uy
-      << "(2), t, " << uy << "_out, t_out, ErrStat2, ErrMsg2 )\n";
+    w << "   CALL " << mod.nickname << "_" << ddt.name_short << "_ExtrapInterp1(" << uy << "(1), "
+      << uy << "(2), t, " << uy << "_out, t_out, ErrStat2, ErrMsg2 )\n";
     w << "     CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg,RoutineName)\n";
     w << " ELSE IF ( order .eq. 2 ) THEN\n";
-    w << "   CALL " << mod.nickname << "_" << type_name << "_ExtrapInterp2(" << uy << "(1), " << uy
-      << "(2), " << uy << "(3), t, " << uy << "_out, t_out, ErrStat2, ErrMsg2 )\n";
+    w << "   CALL " << mod.nickname << "_" << ddt.name_short << "_ExtrapInterp2(" << uy << "(1), "
+      << uy << "(2), " << uy << "(3), t, " << uy << "_out, t_out, ErrStat2, ErrMsg2 )\n";
     w << "     CALL SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg,RoutineName)\n";
     w << " ELSE \n";
     w << "   CALL SetErrStat(ErrID_Fatal,'size(" << uy
       << ") must be less than 4 (order must be less than 3).',ErrStat,ErrMsg,RoutineName)\n";
     w << "   RETURN\n";
     w << " ENDIF \n";
+    w << " END SUBROUTINE " << mod.nickname << "_" << ddt.name_short << "_ExtrapInterp\n";
+    w << "\n";
 
-    w << " END SUBROUTINE " << mod.nickname << "_" << type_name << "_ExtrapInterp\n";
-    w << std::endl;
-
-    int max_ndims =
-        0; // mod.module_ddt_list->max_ndims; //bjj: this is max for module, not for type_name_long
+    // bjj: this is max for module, not for type_name_long
+    int max_rank = 0;    // mod.module_ddt_list->max_ndims;
     int max_nrecurs = 0; // MAXRECURSE;
     int max_alloc_ndims = 0;
 
     // Recursively calculate extrap/interp order
     for (const auto &field : ddt.fields)
     {
-        calc_extint_order(w, mod, field, 0, max_ndims, max_nrecurs, max_alloc_ndims);
+        calc_extint_order(w, mod, field, 0, max_rank, max_nrecurs, max_alloc_ndims);
     }
 
     // Generate first order extrap/interp routine
-    gen_ExtrapInterp1(w, mod, type_name, type_name_long, type_kind, uy, modPrefix, max_ndims,
-                      max_nrecurs, max_alloc_ndims, ddt);
+    gen_ExtrapInterp1(w, mod, ddt, type_kind, uy, modPrefix, max_rank, max_nrecurs,
+                      max_alloc_ndims);
 
     // Generate second order extrap/interp routine
-    gen_ExtrapInterp2(w, mod, type_name, type_name_long, type_kind, uy, modPrefix, max_ndims,
-                      max_nrecurs, max_alloc_ndims, ddt);
+    gen_ExtrapInterp2(w, mod, ddt, type_kind, uy, modPrefix, max_rank, max_nrecurs,
+                      max_alloc_ndims);
 }
 
 void gen_copy_c2f(std::ostream &w, const Module &mod, const DataType::Derived &ddt)
@@ -1757,7 +1672,7 @@ void gen_copy_c2f(std::ostream &w, const Module &mod, const DataType::Derived &d
 
     w << " SUBROUTINE " << routine_name << "( " << ddt.name_short
       << "Data, ErrStat, ErrMsg, SkipPointers )\n";
-    w << "    TYPE(" << ddt.name_prefixed << "), INTENT(INOUT) :: " << ddt.name_short << "Data\n";
+    w << "    TYPE(" << ddt.type_fortran << "), INTENT(INOUT) :: " << ddt.name_short << "Data\n";
     w << "    INTEGER(IntKi),  INTENT(  OUT) :: ErrStat\n";
     w << "    CHARACTER(*),    INTENT(  OUT) :: ErrMsg\n";
     w << "    LOGICAL,OPTIONAL,INTENT(IN   ) :: SkipPointers\n";
@@ -1830,7 +1745,7 @@ void gen_copy_f2c(std::ostream &w, const Module &mod, const DataType::Derived &d
 
     w << " SUBROUTINE " << routine_name << "( " << ddt.name_short
       << "Data, ErrStat, ErrMsg, SkipPointers  )\n";
-    w << "    TYPE(" << ddt.name_prefixed << "), INTENT(INOUT) :: " << ddt.name_short << "Data\n";
+    w << "    TYPE(" << ddt.type_fortran << "), INTENT(INOUT) :: " << ddt.name_short << "Data\n";
     w << "    INTEGER(IntKi),  INTENT(  OUT) :: ErrStat\n";
     w << "    CHARACTER(*),    INTENT(  OUT) :: ErrMsg\n";
     w << "    LOGICAL,OPTIONAL,INTENT(IN   ) :: SkipPointers\n";

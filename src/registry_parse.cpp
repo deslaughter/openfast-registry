@@ -1,13 +1,10 @@
 #include <fstream>
-#include <iomanip>
-#include <memory>
-#include <regex>
 
 #include "registry.hpp"
 
 const int MAX_FIELDS = 10;
 
-int Registry::parse(const std::string &file_name, const int recurse_level)
+void Registry::parse(const std::string &file_name, const int recurse_level)
 {
     std::ifstream inp_file;
     std::vector<std::string> fields_prev;
@@ -21,7 +18,7 @@ int Registry::parse(const std::string &file_name, const int recurse_level)
         {
             std::cerr << "Registry program cannot open " << file_name << " for reading. ";
             std::cerr << "Ending." << std::endl;
-            return -1;
+            exit(EXIT_FAILURE);
         }
     }
     // Otherwise, find and open include file
@@ -29,26 +26,21 @@ int Registry::parse(const std::string &file_name, const int recurse_level)
     {
         // If this include file has been parsed, return
         if (this->include_files.find(file_name) != this->include_files.end())
-        {
-            return 0;
-        }
+            return;
 
         // Loop through directories and try to open file, break on success
         for (auto &dir : this->include_dirs)
         {
             inp_file.open(dir + "/" + file_name);
             if (inp_file)
-            {
                 break;
-            }
         }
 
-        // If file not opened successfully, return error
+        // If file not opened successfully, exit
         if (!inp_file)
         {
-            std::cerr << "Registry warning: cannot open " << file_name << ". Ignoring."
-                      << std::endl;
-            return 0;
+            std::cerr << "Registry error: cannot open '" << file_name << "'." << std::endl;
+            exit(EXIT_FAILURE);
         }
 
         // Display message about opening file
@@ -66,11 +58,11 @@ int Registry::parse(const std::string &file_name, const int recurse_level)
         if (this->parse_line(line, fields_prev, recurse_level) != 0)
         {
             std::cerr << "Error reading " << file_name << ":" << line_num << "\n";
-            break;
+            exit(EXIT_FAILURE);
         }
     }
 
-    // If this file is included by the root file, save module
+    // If this file is directly included by the root file, save use module
     if (recurse_level == 1)
     {
         auto slash_index = fields_prev[1].find("/");
@@ -78,15 +70,7 @@ int Registry::parse(const std::string &file_name, const int recurse_level)
         auto module_name = has_slash ? fields_prev[1].substr(0, slash_index) : fields_prev[1];
         this->use_modules.push_back(module_name);
     }
-
-    return 0;
 }
-
-const std::regex quote_split_re("\"");
-const std::regex space_split_re("\\s+");
-const std::regex strip_start("^\\s+");
-const std::regex strip_end("\\s+$");
-const std::sregex_token_iterator re_end;
 
 int Registry::parse_line(const std::string &line, std::vector<std::string> &fields_prev,
                          const int recurse_level)
@@ -107,24 +91,18 @@ int Registry::parse_line(const std::string &line, std::vector<std::string> &fiel
 
     // Skip empty line
     if (fields.size() == 0 || fields[0][0] == '#')
-    {
-        return 0;
-    }
+        return EXIT_SUCCESS;
 
     //--------------------------------------------------------------------------
     // Include Line
     //--------------------------------------------------------------------------
 
     if (fields.size() == 2 &&
-        (fields[0].compare("include") == 0 || fields[0].compare("usefrom") == 0))
+        (tolower(fields[0]).compare("include") == 0 || tolower(fields[0]).compare("usefrom") == 0))
     {
         auto file_name = fields[1];
-        if (this->parse(file_name, recurse_level + 1) != 0)
-        {
-            std::cerr << "error parsing" << file_name << std::endl;
-            return -1;
-        }
-        return 0;
+        this->parse(file_name, recurse_level + 1);
+        return EXIT_SUCCESS;
     }
 
     //--------------------------------------------------------------------------
@@ -158,7 +136,7 @@ int Registry::parse_line(const std::string &line, std::vector<std::string> &fiel
     auto module_name = has_slash ? fields[1].substr(0, slash_index) : fields[1];
     auto module_nickname = has_slash ? fields[1].substr(slash_index + 1) : fields[1];
 
-    // Find module in map or add it to map
+    // Find module in map or create and add it to map
     auto it = this->modules.find(module_name);
     if (it == this->modules.end())
     {
@@ -174,7 +152,7 @@ int Registry::parse_line(const std::string &line, std::vector<std::string> &fiel
     // Parameter Line
     //--------------------------------------------------------------------------
 
-    if (fields[0].compare("param") == 0)
+    if (tolower(fields[0]).compare("param") == 0)
     {
         auto name = fields[4];
         auto type = fields[3];
@@ -186,20 +164,22 @@ int Registry::parse_line(const std::string &line, std::vector<std::string> &fiel
         auto param_type = this->find_data_type(type);
         if (param_type == nullptr)
         {
-            std::cerr << "Registry warning: type " << type << " used before defined for " << name
+            std::cerr << "Registry error: type " << type << " used before defined for " << name
                       << std::endl;
+            return EXIT_FAILURE;
         }
 
         // Add parameter to module
         mod->params.push_back(Parameter(name, param_type, value, desc, units));
-        return 0;
+        return EXIT_SUCCESS;
     }
 
     //--------------------------------------------------------------------------
     // Derived Type Line
     //--------------------------------------------------------------------------
 
-    if ((fields[0].compare("typedef") == 0) || (fields[0].compare("usefrom") == 0))
+    if ((tolower(fields[0]).compare("typedef") == 0) ||
+        (tolower(fields[0]).compare("usefrom") == 0))
     {
         auto ddt_name_base = fields[2];
         auto field_type_name = fields[3];
@@ -254,7 +234,7 @@ int Registry::parse_line(const std::string &line, std::vector<std::string> &fiel
             if (is_root)
             {
                 mod->data_types[ddt_name] = ddt_dt;
-                mod->data_type_order.push_back(ddt_name);
+                mod->ddt_names.push_back(ddt_name);
             }
             else
             {
@@ -272,7 +252,7 @@ int Registry::parse_line(const std::string &line, std::vector<std::string> &fiel
         {
             std::cerr << "Error: type " << field_type_name << " used before defined for " << name
                       << std::endl;
-            return 1;
+            return EXIT_FAILURE;
         }
 
         // Create field
@@ -296,10 +276,10 @@ int Registry::parse_line(const std::string &line, std::vector<std::string> &fiel
 
         // Add field to derived data type
         ddt_dt->derived.fields.push_back(field);
-        return 0;
+        return EXIT_SUCCESS;
     }
 
     // Line is invalid
     std::cerr << "Error: invalid line: '" << line << "'\n";
-    return 1;
+    return EXIT_FAILURE;
 }

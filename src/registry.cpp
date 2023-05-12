@@ -1,19 +1,6 @@
-
-#include <algorithm>
-#include <fstream>
-#include <iostream>
-#include <regex>
-
 #include "registry.hpp"
 
-std::string tolower(std::string s)
-{
-    for (auto &c : s)
-        c = std::tolower(c);
-    return s;
-}
-
-int Registry::gen_module_files(std::string const &out_dir)
+void Registry::gen_module_files(std::string const &out_dir)
 {
     // Find root module
     std::shared_ptr<Module> mod;
@@ -30,7 +17,7 @@ int Registry::gen_module_files(std::string const &out_dir)
     if (mod == nullptr)
     {
         std::cerr << "unable to find root module" << std::endl;
-        return -1;
+        exit(EXIT_FAILURE);
     }
 
     // Generate fortran module
@@ -39,6 +26,11 @@ int Registry::gen_module_files(std::string const &out_dir)
     // Generate C code
     if (this->gen_c_code)
         this->gen_c_module(*mod, out_dir);
+}
 
-    return 0;
+std::string tolower(std::string s)
+{
+    for (auto &c : s)
+        c = std::tolower(c);
+    return s;
 }

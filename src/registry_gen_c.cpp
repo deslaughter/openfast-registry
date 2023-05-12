@@ -1,27 +1,27 @@
-#include "registry.hpp"
-#include "templates.hpp"
-
 #include <fstream>
-#include <iostream>
+
+#include "registry.hpp"
 
 void Registry::gen_c_module(const Module &mod, const std::string &out_dir)
 {
     auto file_name = mod.name + "_Types.h";
     auto file_path = out_dir + "/" + file_name;
+
+    // Write message that file is being generated
     std::cerr << "generating " << file_name << std::endl;
 
     // Open output file, return if error
     std::ofstream w(file_path);
     if (!w)
     {
-        std::cerr << "Error creating module file: '" << file_path << "'\n";
-        return;
+        std::cerr << "Error creating module file: '" << file_path << "'" << std::endl;
+        exit(EXIT_FAILURE);
     }
 
+    // Write file header
     w << "//!STARTOFREGISTRYGENERATEDFILE '" << file_name << "'\n";
     w << "//!\n";
-    w << "//! WARNING This file is generated automatically by the FAST "
-         "registry.\n";
+    w << "//! WARNING This file is generated automatically by the FAST registry.\n";
     w << "//! Do not edit.  Your changes to this file will be lost.\n";
     w << "//!\n";
     w << "\n";
@@ -41,7 +41,7 @@ void Registry::gen_c_module(const Module &mod, const std::string &out_dir)
     w << "\n\n";
 
     // Loop through data types in module
-    for (auto &dt_name : mod.data_type_order)
+    for (auto &dt_name : mod.ddt_names)
     {
         // Get derive data types in module
         auto it = mod.data_types.find(dt_name);
@@ -50,7 +50,7 @@ void Registry::gen_c_module(const Module &mod, const std::string &out_dir)
             continue;
         auto &ddt = dt.derived;
 
-        w << "  typedef struct " << ddt.name_prefixed << " {\n";
+        w << "  typedef struct " << ddt.type_fortran << " {\n";
         w << "    void * object ;\n";
         for (const auto &field : ddt.fields)
         {
@@ -87,11 +87,12 @@ void Registry::gen_c_module(const Module &mod, const std::string &out_dir)
             }
             w << "\n";
         }
-        w << "  } " << ddt.name_prefixed << "_t ;\n";
+        w << "  } " << ddt.type_fortran << "_t ;\n";
     }
 
+    // Write struct containing all of the module's derived types
     w << "  typedef struct " << mod.nickname << "_UserData {\n";
-    for (auto &dt_name : mod.data_type_order)
+    for (auto &dt_name : mod.ddt_names)
     {
         // Get derived data types with interfaces
         auto it = mod.data_types.find(dt_name);
@@ -103,11 +104,12 @@ void Registry::gen_c_module(const Module &mod, const std::string &out_dir)
             continue;
 
         // Write name
-        w << "    " << std::setw(30) << std::left << ddt.name_prefixed + "_t"
+        w << "    " << std::setw(30) << std::left << ddt.type_fortran + "_t"
           << " " << mod.nickname << "_" << ddt.interface->name_short << " ;\n";
     }
     w << "  } " << mod.nickname << "_t ;\n";
 
+    // Write file footer
     w << "\n#endif // _" << mod.name << "_TYPES_H\n\n\n";
     w << "//!ENDOFREGISTRYGENERATEDFILE\n";
 }

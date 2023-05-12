@@ -239,7 +239,7 @@ struct DataType
     {
         std::string name;
         std::string name_short;
-        std::string name_prefixed;
+        std::string type_fortran;
         std::shared_ptr<Module> module;
         std::vector<Field> fields;
         bool contains_mesh = false;
@@ -299,7 +299,7 @@ struct DataType
         this->derived.name = name;
         this->derived.module = mod;
         this->derived.name_short = name_short.empty() ? name : name_short;
-        this->derived.name_prefixed = name_prefixed.empty() ? name : name_prefixed;
+        this->derived.type_fortran = name_prefixed.empty() ? name : name_prefixed;
         this->derived.contains_mesh =
             (tolower(name).compare("meshtype") == 0) || (tolower(name).compare("meshmaptype") == 0);
     }
@@ -391,7 +391,7 @@ struct Module
     std::string nickname;
     std::vector<Parameter> params;
     std::map<std::string, std::shared_ptr<DataType>, ci_less> data_types;
-    std::vector<std::string> data_type_order;
+    std::vector<std::string> ddt_names;
     bool is_root = false;
 
     Module(std::string name, std::string nickname, bool is_root)
@@ -464,7 +464,7 @@ struct Registry
     }
 
     // Parsing
-    int parse(const std::string &file_name, const int recurse_level);
+    void parse(const std::string &file_name, const int recurse_level);
     int parse_line(const std::string &line, std::vector<std::string> &fields_prev,
                    const int recurse_level);
     std::shared_ptr<DataType> find_data_type(const std::string &type_name,
@@ -503,7 +503,7 @@ struct Registry
     }
 
     // Output
-    int gen_module_files(std::string const &out_dir);
+    void gen_module_files(std::string const &out_dir);
     void gen_fortran_module(const Module &mod, const std::string &out_dir);
     void gen_c_module(const Module &mod, const std::string &out_dir);
 };
